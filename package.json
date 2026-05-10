@@ -1,0 +1,26 @@
+{
+  "name": "simulator",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node ./node_modules/vite/bin/vite.js",
+    "build": "node ./node_modules/vite/bin/vite.js build",
+    "preview": "node ./node_modules/vite/bin/vite.js preview",
+    "test:asm": "node ./scripts/test-asm-alias.mjs",
+    "build:samples": "node ./scripts/build-asm-samples.mjs",
+    "build:all": "node ./scripts/build-asm-samples.mjs && node ./node_modules/vite/bin/vite.js build",
+    "export:web": "node ./scripts/export-plain-js.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.0.11"
+  },
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.2"
+  }
+}

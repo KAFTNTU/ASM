@@ -1,0 +1,3551 @@
+﻿SIMULATOR CODE DUMP
+Generated: 2026-05-09T23:54:44
+
+
+
+===== FILE: src/ui/app.ts =====
+
+import { Board } from "../vm/board";
+import { LedBar } from "../vm/devices/ledBar";
+import { SevenSeg4 } from "../vm/devices/sevenSeg";
+import { Matrix5x7 } from "../vm/devices/matrix5x7";
+import { Keypad4x3 } from "../vm/devices/keypad4x3";
+import { Lcd16x2 } from "../vm/devices/lcd16x2";
+import { AdcJoystick } from "../vm/devices/adcJoystick";
+import { ST841_MAP } from "../vm/st841Map";
+import { renderStand } from "./standView";
+import { exampleScripts } from "./examples";
+
+export function createApp(root: HTMLDivElement): void {
+  const board = new Board();
+
+  const ledBar = new LedBar();
+  const sevenSeg = new SevenSeg4();
+  const matrix = new Matrix5x7();
+  const keypad = new Keypad4x3();
+  const lcd = new Lcd16x2();
+  const adc = new AdcJoystick();
+
+  // Addresses from the PDF examples:
+  // - LED line: addr 0x07
+  // - 7-seg digits: addr 0x01..0x04
+  // - LED matrix rows: addr 0x05 (active-low), cols: addr 0x06 (active-high)
+  board.bus.registerDevice(ST841_MAP.ledBarAddr, ledBar);
+  // Manual mapping says 0x01 is the rightmost digit and 0x04 is the leftmost.
+  board.bus.registerDevice(ST841_MAP.sevenSegAddrs[0], sevenSeg.digit(3));
+  board.bus.registerDevice(ST841_MAP.sevenSegAddrs[1], sevenSeg.digit(2));
+  board.bus.registerDevice(ST841_MAP.sevenSegAddrs[2], sevenSeg.digit(1));
+  board.bus.registerDevice(ST841_MAP.sevenSegAddrs[3], sevenSeg.digit(0));
+  board.bus.registerDevice(ST841_MAP.matrixRowsAddr, matrix.rowsDevice());
+  board.bus.registerDevice(ST841_MAP.matrixColsAddr, matrix.colsDevice());
+  // 1:1 lab mode: LCD protocol goes through 0x08 (RS is encoded in DAT bit0).
+  board.bus.registerDevice(ST841_MAP.lcdAddr, lcd);
+  // Compatibility with lab snippets using split LCD addr:
+  // 0x08 for commands, 0x09 for data.
+  board.bus.registerDevice((ST841_MAP.lcdAddr + 1) & 0xff, {
+    write(data: number) {
+      lcd.writeDataByte(data);
+    },
+  });
+
+  // Keypad is read-only from the MCU side, driven by current P2 address.
+  board.bus.registerReadProvider((addr, ctx) => keypad.read(addr, ctx.keypadPressed));
+
+  board.extraDevices = { lcd, adc, keypad, sevenSeg, matrix, ledBar };
+
+  root.innerHTML = "";
+  root.appendChild(renderStand({ board, exampleScripts }));
+}
+
+
+
+
+===== FILE: src/ui/asmCompiler.ts =====
+
+export type AsmDiagnostic = {
+  level: "error" | "warning" | "hint";
+  line?: number;
+  message: string;
+};
+
+export type AsmCompileResult = {
+  ok: boolean;
+  hex: string;
+  bytes: Uint8Array;
+  pcToLine: Array<{ pc: number; line: number }>;
+  diagnostics: AsmDiagnostic[];
+};
+
+type ParsedLine = {
+  line: number;
+  address: number;
+  mnemonic: string;
+  operands: string[];
+};
+
+type OperandHint = "any" | "immediate";
+
+const DIRECT_MAP = {
+  p0: 0x80,
+  sp: 0x81,
+  dpl: 0x82,
+  dph: 0x83,
+  dpp: 0x84,
+  pcon: 0x87,
+  p1: 0x90,
+  p2: 0xa0,
+  ie: 0xa8,
+  p3: 0xb0,
+  ip: 0xb8,
+  tcon: 0x88,
+  tmod: 0x89,
+  tl0: 0x8a,
+  tl1: 0x8b,
+  th0: 0x8c,
+  th1: 0x8d,
+  t2con: 0xc8,
+  t2mod: 0xc9,
+  rcap2l: 0xca,
+  rcap2h: 0xcb,
+  tl2: 0xcc,
+  th2: 0xcd,
+  scon: 0x98,
+  sbuf: 0x99,
+  t3con: 0xae,
+  t3fd: 0xaf,
+  pwmcon: 0xd7,
+  pwm0h: 0xfb,
+  pwm0l: 0xfa,
+  pwm1h: 0xfd,
+  pwm1l: 0xfc,
+  adccon1: 0xef,
+  adccon2: 0xd8,
+  adcdatal: 0xd9,
+  adcdatah: 0xda,
+  adccon3: 0xf5,
+  adcofsl: 0xf1,
+  adcofsh: 0xf2,
+  adcgainl: 0xf3,
+  adcgainh: 0xf4,
+  dac0l: 0xf9,
+  dac0h: 0xfa,
+  dac1l: 0xfb,
+  dac1h: 0xfc,
+  daccon: 0xfd,
+  psw: 0xd0,
+  acc: 0xe0,
+  b: 0xf0,
+} as const;
+
+const BIT_ALIAS_MAP: Record<string, number> = {
+  // SCON
+  ri: 0x98,
+  ti: 0x99,
+  rb8: 0x9a,
+  tb8: 0x9b,
+  ren: 0x9c,
+  sm2: 0x9d,
+  sm1: 0x9e,
+  sm0: 0x9f,
+  // TCON
+  it0: 0x88,
+  ie0: 0x89,
+  it1: 0x8a,
+  ie1: 0x8b,
+  tr0: 0x8c,
+  tf0: 0x8d,
+  tr1: 0x8e,
+  tf1: 0x8f,
+  // IE/IP
+  ex0: 0xa8,
+  et0: 0xa9,
+  ex1: 0xaa,
+  et1: 0xab,
+  es: 0xac,
+  et2: 0xad,
+  eadc: 0xae,
+  ea: 0xaf,
+  px0: 0xb8,
+  pt0: 0xb9,
+  px1: 0xba,
+  pt1: 0xbb,
+  ps: 0xbc,
+  pt2: 0xbd,
+  padc: 0xbe,
+  psi: 0xbf,
+  // PSW
+  p: 0xd0,
+  f1: 0xd1,
+  ov: 0xd2,
+  rs0: 0xd3,
+  rs1: 0xd4,
+  f0: 0xd5,
+  ac: 0xd6,
+  cy: 0xd7,
+  // ADC/T2
+  adci: 0xdf,
+  sconv: 0xdc,
+  tf2: 0xcf,
+  exf2: 0xce,
+};
+
+export function compileAsm(source: string): AsmCompileResult {
+  const diagnostics: AsmDiagnostic[] = [];
+  const lines = source.split(/\r?\n/);
+  const labels = new Map<string, number>();
+  const equ = new Map<string, string>();
+  const parsed: ParsedLine[] = [];
+  let address = 0;
+
+  for (let index = 0; index < lines.length; index++) {
+    const lineNo = index + 1;
+    let text = stripComment(lines[index]).trim();
+    // Compatibility with pasted snippets that accidentally start with "=".
+    if (text.startsWith("=")) {
+      text = text.slice(1).trim();
+    }
+    if (!text) continue;
+
+  const equMatch = /^([A-Za-z_.$?][\w.$?]*)\s+equ\s+(.+)$/i.exec(text);
+  if (equMatch) {
+    equ.set(equMatch[1].toLowerCase(), equMatch[2].trim());
+    continue;
+  }
+  const dataMatch = /^([A-Za-z_.$?][\w.$?]*)\s+data\s+(.+)$/i.exec(text);
+  if (dataMatch) {
+    equ.set(dataMatch[1].toLowerCase(), dataMatch[2].trim());
+    continue;
+  }
+  const bitMatchDecl = /^([A-Za-z_.$?][\w.$?]*)\s+bit\s+(.+)$/i.exec(text);
+  if (bitMatchDecl) {
+    equ.set(bitMatchDecl[1].toLowerCase(), bitMatchDecl[2].trim());
+    continue;
+  }
+
+    const orgMatch = /^org\s+(.+)$/i.exec(text);
+    if (orgMatch) {
+      const value = resolveNumber(orgMatch[1], equ);
+      if (value == null) {
+        diagnostics.push({ level: "error", line: lineNo, message: "Invalid ORG value." });
+      } else {
+        address = value & 0xffff;
+      }
+      continue;
+    }
+
+    if (/^(\.module|\.area|\.end|end)\b/i.test(text)) {
+      continue;
+    }
+
+    const labelMatch = /^([A-Za-z_.$?][\w.$?]*):\s*(.*)$/.exec(text);
+    if (labelMatch) {
+      labels.set(labelMatch[1].toLowerCase(), address);
+      text = labelMatch[2].trim();
+      if (!text) continue;
+    }
+
+    const { mnemonic, operands } = splitInstruction(text);
+    const size = estimateSize(mnemonic, operands);
+    if (size === 0) {
+      diagnostics.push({
+        level: "error",
+        line: lineNo,
+        message: `Unsupported instruction: ${mnemonic} ${operands.join(", ")}`.trim(),
+      });
+      continue;
+    }
+
+    parsed.push({
+      line: lineNo,
+      address,
+      mnemonic,
+      operands,
+    });
+    address = (address + size) & 0xffff;
+  }
+
+  const map = new Map<number, number>();
+  const pcToLine: Array<{ pc: number; line: number }> = [];
+  for (const entry of parsed) {
+    pcToLine.push({ pc: entry.address & 0xffff, line: entry.line });
+    const encoded = encodeInstruction(entry, labels, equ, diagnostics);
+    if (!encoded) continue;
+    encoded.forEach((byte, offset) => map.set((entry.address + offset) & 0xffff, byte & 0xff));
+  }
+
+  const bytes = flattenMap(map);
+  const hex = toIntelHex(map);
+  if (bytes.length && !diagnostics.length) {
+    diagnostics.push({ level: "hint", message: "ASM compiled to HEX successfully." });
+  }
+
+  return {
+    ok: diagnostics.every((item) => item.level !== "error"),
+    hex,
+    bytes,
+    pcToLine,
+    diagnostics,
+  };
+}
+
+function stripComment(line: string): string {
+  const semicolon = line.indexOf(";");
+  const slash = line.indexOf("//");
+  let end = line.length;
+  if (semicolon >= 0) end = Math.min(end, semicolon);
+  if (slash >= 0) end = Math.min(end, slash);
+  return line.slice(0, end);
+}
+
+function splitInstruction(text: string): { mnemonic: string; operands: string[] } {
+  const trimmed = text.trim();
+  const match = /^([^\s]+)\s*(.*)$/.exec(trimmed);
+  const mnemonic = (match?.[1] ?? "").toLowerCase();
+  const tail = match?.[2] ?? "";
+  const operands = tail
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return { mnemonic, operands };
+}
+
+function estimateSize(mnemonic: string, operands: string[]): number {
+  const arg0 = operands[0]?.trim().toLowerCase() ?? "";
+  const arg1 = operands[1]?.trim().toLowerCase() ?? "";
+
+  switch (mnemonic) {
+    case "db":
+      return operands.length;
+    case "mov":
+      if (operands.length !== 2) return 0;
+      if (arg0 === "dptr" && arg1.startsWith("#")) return 3;
+      if (arg0 === "c" || arg1 === "c") return 2;
+      if (arg1.startsWith("#")) {
+        return isRegisterToken(arg0) || arg0 === "a" || arg0 === "acc" ? 2 : 3;
+      }
+      return 2;
+    case "xch":
+      return operands.length === 2 ? 1 + (isRegisterToken(arg1) || arg1 === "@r0" || arg1 === "@r1" ? 0 : 1) : 0;
+    case "xchd":
+      return operands.length === 2 ? 1 : 0;
+    case "anl":
+    case "orl":
+    case "xrl":
+      if (operands.length !== 2) return 0;
+      if (arg0 === "a" || arg0 === "acc" || arg0 === "c") return 2;
+      if (isRegisterToken(arg0)) return 2;
+      return arg1.startsWith("#") ? 3 : 2;
+    case "add":
+    case "addc":
+    case "subb":
+      return operands.length === 2 ? 2 : 0;
+    case "setb":
+    case "clr":
+    case "cpl":
+      if (operands.length !== 1) return 0;
+      return arg0 === "c" || arg0 === "a" || arg0 === "acc" ? 1 : 2;
+    case "push":
+    case "pop":
+      return operands.length === 1 ? 2 : 0;
+    case "dec":
+    case "inc":
+      if (operands.length !== 1) return 0;
+      return isRegisterToken(arg0) || arg0 === "a" || arg0 === "acc" || arg0 === "dptr" ? 1 : 2;
+    case "nop":
+    case "ret":
+    case "reti":
+    case "rr":
+    case "rl":
+    case "rrc":
+    case "rlc":
+    case "swap":
+    case "movc":
+      return 1;
+    case "mul":
+    case "div":
+      return operands.length <= 1 ? 1 : 0;
+    case "movx":
+      return operands.length === 2 ? 1 : 0;
+    case "call":
+    case "acall":
+    case "lcall":
+    case "jmp":
+    case "ljmp":
+      if (operands.length !== 1) return 0;
+      if (mnemonic === "jmp" && arg0.replace(/\s+/g, "") === "@a+dptr") return 1;
+      return 3;
+    case "sjmp":
+    case "jz":
+    case "jnz":
+    case "jc":
+    case "jnc":
+      return operands.length === 1 ? 2 : 0;
+    case "jb":
+    case "jnb":
+    case "jbc":
+      return operands.length === 2 ? 3 : 0;
+    case "cjne":
+      if (operands.length !== 3) return 0;
+      return isRegisterToken(arg0) || arg0 === "a" || arg0 === "acc" || arg0 === "@r0" || arg0 === "@r1" ? 3 : 4;
+    case "djnz":
+      if (operands.length !== 2) return 0;
+      return isRegisterToken(arg0) ? 2 : 3;
+    default:
+      return 0;
+  }
+}
+
+function encodeInstruction(
+  entry: ParsedLine,
+  labels: Map<string, number>,
+  equ: Map<string, string>,
+  diagnostics: AsmDiagnostic[],
+): number[] | null {
+  const hints = operandHints(entry.mnemonic, entry.operands);
+  const ops = entry.operands.map((operand, index) =>
+    parseOperand(operand, labels, equ, hints[index] ?? "any", entry.address),
+  );
+  if (ops.some((op) => op.type === "unknown" || ("unresolved" in op && op.unresolved))) {
+    diagnostics.push({
+      level: "error",
+      line: entry.line,
+      message: `Cannot resolve operands for ${entry.mnemonic}.`,
+    });
+    return null;
+  }
+
+  const fail = (message: string) => {
+    diagnostics.push({ level: "error", line: entry.line, message });
+    return null;
+  };
+
+  switch (entry.mnemonic) {
+    case "db": {
+      const bytes: number[] = [];
+      for (const operand of entry.operands) {
+        const value = resolveValue(operand, labels, equ);
+        if (value == null) return fail(`Cannot resolve DB value: ${operand}`);
+        bytes.push(value & 0xff);
+      }
+      return bytes;
+    }
+    case "mov": {
+      const [dst, src] = ops;
+      const srcToken = (entry.operands[1] ?? "").trim();
+      const srcLooksNumeric = isNumericLiteralToken(srcToken);
+      if (dst.type === "reg" && src.type === "imm") return [0x78 + dst.value, src.value];
+      if (dst.type === "indirect" && src.type === "imm") return [0x76 + dst.value, src.value];
+      if (dst.type === "reg" && src.type === "a") return [0xf8 + dst.value];
+      if (dst.type === "indirect" && src.type === "a") return [0xf6 + dst.value];
+      if (dst.type === "a" && src.type === "imm") return [0x74, src.value];
+      if (dst.type === "a" && src.type === "reg") return [0xe8 + src.value];
+      if (dst.type === "a" && src.type === "indirect") return [0xe6 + src.value];
+      if (dst.type === "dptr" && src.type === "imm") return [0x90, (src.value >> 8) & 0xff, src.value & 0xff];
+      if (dst.type === "direct" && src.type === "imm") return [0x75, dst.value, src.value];
+      // Compatibility: accept "mov p1, 0xff" as immediate write for lab snippets.
+      if (dst.type === "direct" && src.type === "direct" && srcLooksNumeric) {
+        return [0x75, dst.value, src.value & 0xff];
+      }
+      if (dst.type === "direct" && src.type === "reg") return [0x88 + src.value, dst.value];
+      if (dst.type === "reg" && src.type === "direct") return [0xa8 + dst.value, src.value];
+      if (dst.type === "direct" && src.type === "a") return [0xf5, dst.value];
+      if (dst.type === "a" && src.type === "direct") return [0xe5, src.value];
+      if (dst.type === "direct" && src.type === "direct") return [0x85, src.value, dst.value];
+      if (dst.type === "c" && src.type === "bit") return [0xa2, src.value];
+      if (dst.type === "bit" && src.type === "c") return [0x92, dst.value];
+      return fail("Unsupported MOV form.");
+    }
+    case "xch": {
+      const [dst, src] = ops;
+      if (dst.type !== "a") return fail("XCH expects A as first operand.");
+      if (src.type === "reg") return [0xc8 + src.value];
+      if (src.type === "direct") return [0xc5, src.value];
+      if (src.type === "indirect") return [0xc6 + src.value];
+      return fail("Unsupported XCH form.");
+    }
+    case "xchd": {
+      const [dst, src] = ops;
+      if (dst.type !== "a" || src.type !== "indirect") return fail("XCHD expects A,@R0 or A,@R1.");
+      return [0xd6 + src.value];
+    }
+    case "anl":
+    case "orl":
+    case "xrl": {
+      const [dst, src] = ops;
+      const base =
+        entry.mnemonic === "anl"
+          ? { aImm: 0x54, aDir: 0x55, aInd0: 0x56, aInd1: 0x57, dirImm: 0x53, dirA: 0x52, cBit: 0x82, cNBit: 0xb0 }
+          : entry.mnemonic === "orl"
+            ? { aImm: 0x44, aDir: 0x45, aInd0: 0x46, aInd1: 0x47, dirImm: 0x43, dirA: 0x42, cBit: 0x72, cNBit: 0xa0 }
+            : { aImm: 0x64, aDir: 0x65, aInd0: 0x66, aInd1: 0x67, dirImm: 0x63, dirA: 0x62, cBit: -1, cNBit: -1 };
+      if (dst.type === "a" && src.type === "imm") return [base.aImm, src.value];
+      if (dst.type === "a" && src.type === "direct") return [base.aDir, src.value];
+      if (dst.type === "a" && src.type === "indirect") return [src.value === 0 ? base.aInd0 : base.aInd1];
+      if (dst.type === "direct" && src.type === "imm") return [base.dirImm, dst.value, src.value];
+      if (dst.type === "direct" && src.type === "a") return [base.dirA, dst.value];
+      if (base.cBit >= 0 && dst.type === "c" && src.type === "bit") return [base.cBit, src.value];
+      if (base.cNBit >= 0 && dst.type === "c" && src.type === "nbit") return [base.cNBit, src.value];
+      return fail(`Unsupported ${entry.mnemonic.toUpperCase()} form.`);
+    }
+    case "add":
+    case "addc":
+    case "subb": {
+      const [dst, src] = ops;
+      if (dst.type !== "a") return fail(`${entry.mnemonic.toUpperCase()} expects A as first operand.`);
+      const base = entry.mnemonic === "add" ? 0x20 : entry.mnemonic === "addc" ? 0x30 : 0x90;
+      if (src.type === "imm") return [base + 0x04, src.value];
+      if (src.type === "reg") return [base + 0x08 + src.value];
+      if (src.type === "direct") return [base + 0x05, src.value];
+      return fail(`Unsupported ${entry.mnemonic.toUpperCase()} form.`);
+    }
+    case "setb": {
+      const [target] = ops;
+      if (target.type === "c") return [0xd3];
+      if (target.type === "bit") return [0xd2, target.value];
+      return fail("SETB expects C or bit.");
+    }
+    case "clr": {
+      const [target] = ops;
+      if (target.type === "a") return [0xe4];
+      if (target.type === "c") return [0xc3];
+      if (target.type === "bit") return [0xc2, target.value];
+      return fail("CLR expects A, C, or bit.");
+    }
+    case "cpl": {
+      const [target] = ops;
+      if (target.type === "a") return [0xf4];
+      if (target.type === "c") return [0xb3];
+      if (target.type === "bit") return [0xb2, target.value];
+      return fail("CPL expects A, C, or bit.");
+    }
+    case "push": {
+      const [target] = ops;
+      if (target.type === "direct") return [0xc0, target.value];
+      return fail("PUSH expects direct.");
+    }
+    case "pop": {
+      const [target] = ops;
+      if (target.type === "direct") return [0xd0, target.value];
+      return fail("POP expects direct.");
+    }
+    case "dec": {
+      const [target] = ops;
+      if (target.type === "reg") return [0x18 + target.value];
+      if (target.type === "direct") return [0x15, target.value];
+      if (target.type === "a") return [0x14];
+      return fail("DEC supports A/register/direct.");
+    }
+    case "inc": {
+      const [target] = ops;
+      if (target.type === "reg") return [0x08 + target.value];
+      if (target.type === "direct") return [0x05, target.value];
+      if (target.type === "a") return [0x04];
+      if (target.type === "dptr") return [0xa3];
+      return fail("INC supports A/DPTR/register/direct.");
+    }
+    case "nop":
+      return [0x00];
+    case "ret":
+      return [0x22];
+    case "reti":
+      return [0x32];
+    case "rr": {
+      const [target] = ops;
+      if (target.type !== "a") return fail("RR expects A.");
+      return [0x03];
+    }
+    case "rl": {
+      const [target] = ops;
+      if (target.type !== "a") return fail("RL expects A.");
+      return [0x23];
+    }
+    case "rrc": {
+      const [target] = ops;
+      if (target.type !== "a") return fail("RRC expects A.");
+      return [0x13];
+    }
+    case "rlc": {
+      const [target] = ops;
+      if (target.type !== "a") return fail("RLC expects A.");
+      return [0x33];
+    }
+    case "swap": {
+      const [target] = ops;
+      if (target.type !== "a") return fail("SWAP expects A.");
+      return [0xc4];
+    }
+    case "movc": {
+      if (
+        /^a$/i.test(entry.operands[0] ?? "") &&
+        /^@a\+dptr$/i.test((entry.operands[1] ?? "").replace(/\s+/g, ""))
+      ) {
+        return [0x93];
+      }
+      if (
+        /^a$/i.test(entry.operands[0] ?? "") &&
+        /^@a\+pc$/i.test((entry.operands[1] ?? "").replace(/\s+/g, ""))
+      ) {
+        return [0x83];
+      }
+      return fail("Only MOVC A,@A+DPTR or MOVC A,@A+PC is supported.");
+    }
+    case "movx": {
+      const [dst, src] = ops;
+      if (dst.type === "a" && src.type === "dptrindirect") return [0xe0];
+      if (dst.type === "dptrindirect" && src.type === "a") return [0xf0];
+      if (dst.type === "a" && src.type === "indirect") return [0xe2 + src.value];
+      if (dst.type === "indirect" && src.type === "a") return [0xf2 + dst.value];
+      return fail("Unsupported MOVX form.");
+    }
+    case "mul": {
+      if (!entry.operands.length) return [0xa4];
+      if (/^ab$/i.test((entry.operands[0] ?? "").replace(/\s+/g, ""))) return [0xa4];
+      return fail("Only MUL AB is supported.");
+    }
+    case "div": {
+      if (!entry.operands.length) return [0x84];
+      if (/^ab$/i.test((entry.operands[0] ?? "").replace(/\s+/g, ""))) return [0x84];
+      return fail("Only DIV AB is supported.");
+    }
+    case "call":
+    case "acall":
+    case "lcall": {
+      const [target] = ops;
+      if (target.type !== "addr") return fail("CALL expects address.");
+      return [0x12, (target.value >> 8) & 0xff, target.value & 0xff];
+    }
+    case "jmp":
+    case "ljmp": {
+      const [target] = ops;
+      if (entry.mnemonic === "jmp" && target.type === "codeptr") return [0x73];
+      if (target.type !== "addr") return fail("JMP expects address.");
+      return [0x02, (target.value >> 8) & 0xff, target.value & 0xff];
+    }
+    case "sjmp":
+    case "jz":
+    case "jnz":
+    case "jc":
+    case "jnc": {
+      const [target] = ops;
+      if (target.type !== "addr") return fail(`${entry.mnemonic.toUpperCase()} expects label.`);
+      const rel = relativeOffset(entry.address, 2, target.value);
+      if (rel == null) return fail(`${entry.mnemonic.toUpperCase()} target is out of range.`);
+      const opcode =
+        entry.mnemonic === "sjmp"
+          ? 0x80
+          : entry.mnemonic === "jz"
+            ? 0x60
+            : entry.mnemonic === "jnz"
+              ? 0x70
+              : entry.mnemonic === "jc"
+                ? 0x40
+                : 0x50;
+      return [opcode, rel];
+    }
+    case "jb":
+    case "jnb":
+    case "jbc": {
+      const [bit, target] = ops;
+      if (target.type !== "addr" || bit.type !== "bit") return fail(`${entry.mnemonic.toUpperCase()} expects bit,label.`);
+      const rel = relativeOffset(entry.address, 3, target.value);
+      if (rel == null) return fail(`${entry.mnemonic.toUpperCase()} target is out of range.`);
+      const opcode = entry.mnemonic === "jb" ? 0x20 : entry.mnemonic === "jnb" ? 0x30 : 0x10;
+      return [opcode, bit.value, rel];
+    }
+    case "cjne": {
+      const [left, imm, target] = ops;
+      if (imm.type !== "imm" || target.type !== "addr") {
+        return fail("CJNE expects A/#imm or Rn/#imm plus label.");
+      }
+      if (left.type === "a") {
+        const rel = relativeOffset(entry.address, 3, target.value);
+        if (rel == null) return fail("CJNE target is out of range.");
+        return [0xb4, imm.value, rel];
+      }
+      if (left.type === "reg") {
+        const rel = relativeOffset(entry.address, 3, target.value);
+        if (rel == null) return fail("CJNE target is out of range.");
+        return [0xb8 + left.value, imm.value, rel];
+      }
+      if (left.type === "indirect") {
+        const rel = relativeOffset(entry.address, 3, target.value);
+        if (rel == null) return fail("CJNE target is out of range.");
+        return [0xb6 + left.value, imm.value, rel];
+      }
+      if (left.type === "direct") {
+        const rel = relativeOffset(entry.address, 4, target.value);
+        if (rel == null) return fail("CJNE target is out of range.");
+        return [0xb5, left.value, imm.value, rel];
+      }
+      return fail("Unsupported CJNE form.");
+    }
+    case "djnz": {
+      const [left, target] = ops;
+      if (target.type !== "addr") return fail("DJNZ expects label.");
+      if (left.type === "reg") {
+        const rel = relativeOffset(entry.address, 2, target.value);
+        if (rel == null) return fail("DJNZ target is out of range.");
+        return [0xd8 + left.value, rel];
+      }
+      if (left.type === "direct") {
+        const rel = relativeOffset(entry.address, 3, target.value);
+        if (rel == null) return fail("DJNZ target is out of range.");
+        return [0xd5, left.value, rel];
+      }
+      return fail("Unsupported DJNZ form.");
+    }
+    default:
+      return fail(`Unsupported mnemonic: ${entry.mnemonic}`);
+  }
+}
+
+function parseOperand(
+  operand: string,
+  labels: Map<string, number>,
+  equ: Map<string, string>,
+  hint: OperandHint = "any",
+  currentAddress = 0,
+): Operand {
+  const raw = operand.trim();
+  if (!raw) return { type: "unknown" };
+  if (raw.startsWith("#")) {
+    const value = resolveValue(raw.slice(1), labels, equ);
+    return value == null ? { type: "unknown" } : { type: "imm", value };
+  }
+
+  const lower = raw.toLowerCase();
+  if (lower === "$") return { type: "addr", value: currentAddress & 0xffff };
+  if (lower === "a" || lower === "acc") return { type: "a" };
+  if (lower === "c") return { type: "c" };
+  if (lower === "ab") return { type: "ab" };
+  if (lower.replace(/\s+/g, "") === "@a+dptr") return { type: "codeptr" };
+  if (lower.replace(/\s+/g, "") === "@a+pc") return { type: "codeptrpc" };
+  if (lower.replace(/\s+/g, "") === "@dptr") return { type: "dptrindirect" };
+  if (lower === "dptr") return { type: "dptr" };
+  if (lower === "@r0") return { type: "indirect", value: 0 };
+  if (lower === "@r1") return { type: "indirect", value: 1 };
+  if (isRegisterToken(lower)) return { type: "reg", value: Number(lower[1]) };
+
+  const bitMatch = /^p([0-3])\.([0-7])$/i.exec(raw);
+  if (bitMatch) {
+    const byteBase = [0x80, 0x90, 0xa0, 0xb0][Number(bitMatch[1])];
+    return { type: "bit", value: byteBase + Number(bitMatch[2]) };
+  }
+  const sfrBitMatch = /^([a-z_.$?][\w.$?]*)\.([0-7])$/i.exec(raw);
+  if (sfrBitMatch) {
+    const baseName = sfrBitMatch[1].toLowerCase();
+    const bitIndex = Number(sfrBitMatch[2]);
+    const baseAddr = DIRECT_MAP[baseName as keyof typeof DIRECT_MAP];
+    if (baseAddr != null && baseAddr >= 0x80 && baseAddr <= 0xff) {
+      return { type: "bit", value: (baseAddr & 0xf8) + bitIndex };
+    }
+  }
+  const nbitMatch = /^\/p([0-3])\.([0-7])$/i.exec(raw);
+  if (nbitMatch) {
+    const byteBase = [0x80, 0x90, 0xa0, 0xb0][Number(nbitMatch[1])];
+    return { type: "nbit", value: byteBase + Number(nbitMatch[2]) };
+  }
+  const sfrNBitMatch = /^\/([a-z_.$?][\w.$?]*)\.([0-7])$/i.exec(raw);
+  if (sfrNBitMatch) {
+    const baseName = sfrNBitMatch[1].toLowerCase();
+    const bitIndex = Number(sfrNBitMatch[2]);
+    const baseAddr = DIRECT_MAP[baseName as keyof typeof DIRECT_MAP];
+    if (baseAddr != null && baseAddr >= 0x80 && baseAddr <= 0xff) {
+      return { type: "nbit", value: (baseAddr & 0xf8) + bitIndex };
+    }
+  }
+
+  if (lower in BIT_ALIAS_MAP) {
+    return { type: "bit", value: BIT_ALIAS_MAP[lower] };
+  }
+
+  if (lower in DIRECT_MAP) {
+    return { type: "direct", value: DIRECT_MAP[lower as keyof typeof DIRECT_MAP] };
+  }
+
+  const resolvedNumber = resolveNumber(raw, equ);
+  if (resolvedNumber != null) {
+    if (hint === "immediate") {
+      return { type: "imm", value: resolvedNumber & 0xff };
+    }
+    return { type: "direct", value: resolvedNumber & 0xff };
+  }
+
+  if (labels.has(lower)) {
+    return { type: "addr", value: labels.get(lower) ?? 0 };
+  }
+
+  const alias = equ.get(lower);
+  if (alias) {
+    return parseOperand(alias, labels, equ, hint, currentAddress);
+  }
+
+  return { type: "addr", value: 0, unresolved: true };
+}
+
+function operandHints(mnemonic: string, operands: string[]): OperandHint[] {
+  if (mnemonic === "mov" && operands.length === 2 && /^a$/i.test(operands[0])) {
+    return ["any", "immediate"];
+  }
+  return operands.map(() => "any");
+}
+
+function resolveValue(token: string, labels: Map<string, number>, equ: Map<string, string>): number | null {
+  const raw = token.trim();
+  const lower = raw.toLowerCase();
+  if (labels.has(lower)) return labels.get(lower) ?? 0;
+  const number = resolveNumber(raw, equ);
+  if (number != null) return number;
+  const alias = equ.get(lower);
+  if (alias && alias.toLowerCase() !== lower) return resolveValue(alias, labels, equ);
+  return null;
+}
+
+function resolveNumber(token: string, equ: Map<string, string>): number | null {
+  const raw = token.trim();
+  const lower = raw.toLowerCase();
+  if (lower in DIRECT_MAP) return DIRECT_MAP[lower as keyof typeof DIRECT_MAP];
+  if (isRegisterToken(lower)) return null;
+  const alias = equ.get(lower);
+  if (alias && alias.toLowerCase() !== lower) return resolveNumber(alias, equ);
+  if (/^0x[0-9a-f]+$/i.test(raw)) return Number.parseInt(raw, 16) & 0xffff;
+  if (/^[0-9a-f]+h$/i.test(raw)) return Number.parseInt(raw.slice(0, -1), 16) & 0xffff;
+  if (/^[01]+b$/i.test(raw)) return Number.parseInt(raw.slice(0, -1), 2) & 0xffff;
+  if (/^\d+$/.test(raw)) return Number.parseInt(raw, 10) & 0xffff;
+  return null;
+}
+
+function relativeOffset(origin: number, size: number, target: number): number | null {
+  const diff = target - (origin + size);
+  if (diff < -128 || diff > 127) return null;
+  return diff & 0xff;
+}
+
+function flattenMap(map: Map<number, number>): Uint8Array {
+  const bytes: number[] = [];
+  [...map.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .forEach(([addr, value]) => {
+      bytes.push(addr & 0xffff, value & 0xff);
+    });
+  return Uint8Array.from(bytes);
+}
+
+function toIntelHex(map: Map<number, number>): string {
+  const entries = [...map.entries()].sort((a, b) => a[0] - b[0]);
+  if (!entries.length) return "";
+  const lines: string[] = [];
+  let index = 0;
+  while (index < entries.length) {
+    const chunk = [entries[index]];
+    let nextAddr = entries[index][0] + 1;
+    index += 1;
+    while (index < entries.length && chunk.length < 16 && entries[index][0] === nextAddr) {
+      chunk.push(entries[index]);
+      nextAddr += 1;
+      index += 1;
+    }
+    const start = chunk[0][0] & 0xffff;
+    const data = chunk.map(([, value]) => value & 0xff);
+    const bytes = [data.length, (start >> 8) & 0xff, start & 0xff, 0x00, ...data];
+    const checksum = (~bytes.reduce((sum, value) => (sum + value) & 0xff, 0) + 1) & 0xff;
+    lines.push(
+      ":" +
+        bytes
+          .concat(checksum)
+          .map((value) => value.toString(16).padStart(2, "0").toUpperCase())
+          .join(""),
+    );
+  }
+  lines.push(":00000001FF");
+  return lines.join("\n");
+}
+
+function isRegisterToken(token: string): boolean {
+  return /^r[0-7]$/i.test(token);
+}
+
+function isNumericLiteralToken(token: string): boolean {
+  const raw = token.trim().toLowerCase();
+  return (
+    /^0x[0-9a-f]+$/.test(raw) ||
+    /^[0-9a-f]+h$/.test(raw) ||
+    /^[01]+b$/.test(raw) ||
+    /^\d+$/.test(raw)
+  );
+}
+
+type Operand =
+  | { type: "imm"; value: number }
+  | { type: "reg"; value: number }
+  | { type: "a" }
+  | { type: "c" }
+  | { type: "ab" }
+  | { type: "codeptr" }
+  | { type: "codeptrpc" }
+  | { type: "dptrindirect" }
+  | { type: "indirect"; value: 0 | 1 }
+  | { type: "dptr" }
+  | { type: "direct"; value: number }
+  | { type: "bit"; value: number }
+  | { type: "nbit"; value: number }
+  | { type: "addr"; value: number; unresolved?: boolean }
+  | { type: "unknown" };
+
+
+
+
+===== FILE: src/ui/standView.ts =====
+
+import type { Board } from "../vm/board";
+import { EmuBoardController } from "../vm/emuBoardController";
+import { SFR } from "../vm/st841Map";
+import { compileAsm, type AsmDiagnostic } from "./asmCompiler";
+import { checkC } from "./cChecker";
+import { transpileCToAsm } from "./cTranspiler";
+import type { ScriptExample } from "./scriptRunner";
+
+type CompileResult = {
+  ok: boolean;
+  diagnostics: AsmDiagnostic[];
+  hex: string;
+  pcToLine: Array<{ pc: number; line: number }>;
+};
+
+export function renderStand(params: {
+  board: Board;
+  exampleScripts: ScriptExample[];
+}): HTMLElement {
+  const { board } = params;
+  const cpu = new EmuBoardController(board);
+
+  const root = el("div", { class: "minimalShell" });
+  const windowCard = el("div", { class: "windowCard" });
+  root.appendChild(windowCard);
+
+  const chrome = el("div", { class: "windowChrome" });
+  chrome.appendChild(el("div", { class: "trafficLights" })).innerHTML =
+    '<span class="red"></span><span class="yellow"></span><span class="green"></span>';
+  windowCard.appendChild(chrome);
+
+  const toolbar = el("div", { class: "toolbar" });
+  const runBtn = button("Start", "green");
+  const resetBtn = button("Reset");
+  const stepBtn = button("Step");
+  const traceBtn = button("Runner");
+  const lcdTableBtn = button("Таблиця РКІ");
+  const modeSelect = el("select", { class: "samplePicker" }) as HTMLSelectElement;
+  modeSelect.append(option("asm", "ASM"), option("c", "C"));
+  const speedGroup = el("div", { class: "speedGroup" });
+  const speedMultipliers = [1, 10, 100, 1000, 10000];
+  const speedButtons = speedMultipliers.map((speed) => {
+    const node = button(String(speed), speed === 1 ? "speed active" : "speed");
+    node.addEventListener("click", () => setSpeed(speed));
+    speedGroup.appendChild(node);
+    return { speed, node };
+  });
+  toolbar.append(runBtn, resetBtn, stepBtn, modeSelect, traceBtn, lcdTableBtn, speedGroup);
+  windowCard.appendChild(toolbar);
+
+  const debugModal = el("div", { class: "debugModal hidden" });
+  const debugCard = el("div", { class: "debugCard" });
+  const debugHead = el("div", { class: "debugHead" });
+  const debugTitle = el("div", { class: "debugTitle" });
+  debugTitle.textContent = "Runner / registers / memory";
+  const debugClose = button("Close");
+  debugClose.classList.add("debugClose");
+  debugHead.append(debugTitle, debugClose);
+  const debugBody = el("pre", { class: "debugBody mono" });
+  debugCard.append(debugHead, debugBody);
+  debugModal.appendChild(debugCard);
+  root.appendChild(debugModal);
+
+  const mainRow = el("div", { class: "mainRow" });
+  const boardPane = el("section", { class: "boardPane" });
+  const editorPane = el("section", { class: "editorPane" });
+  mainRow.append(boardPane, editorPane);
+  windowCard.appendChild(mainRow);
+
+  const boardSurface = el("div", { class: "boardSurfaceMini" });
+  const canvas = el("canvas", { class: "boardCanvasMini" }) as HTMLCanvasElement;
+  canvas.width = 720;
+  canvas.height = 720;
+  boardSurface.appendChild(canvas);
+  boardPane.appendChild(boardSurface);
+
+  const boardOverlays = el("div", { class: "boardOverlayMini" });
+  boardSurface.appendChild(boardOverlays);
+  boardSurface.addEventListener("pointerdown", () => {
+    editor.blur();
+  });
+
+  const keypadWrap = el("div", { class: "boardBox keypadBox" });
+  keypadWrap.appendChild(caption("KEYPAD"));
+  const keypadGrid = el("div", { class: "miniKeypad" });
+  keypadWrap.appendChild(keypadGrid);
+  for (const [index, key] of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"].entries()) {
+    const btn = el("button", { class: "miniKey" });
+    btn.textContent = key;
+    btn.addEventListener("pointerdown", (event) => {
+      btn.classList.add("active");
+      board.keypadPress(index, true);
+      updateRuntimeBar();
+      btn.setPointerCapture(event.pointerId);
+    });
+    const releaseKey = () => {
+      btn.classList.remove("active");
+      board.keypadRelease(index);
+      updateRuntimeBar();
+    };
+    btn.addEventListener("pointerup", releaseKey);
+    btn.addEventListener("pointercancel", releaseKey);
+    keypadGrid.appendChild(btn);
+  }
+  boardOverlays.appendChild(keypadWrap);
+
+  const joystickWrap = el("div", { class: "boardBox joystickBox" });
+  joystickWrap.appendChild(caption("ADC / JOYSTICK"));
+  const joystickFace = el("div", { class: "joystickFaceMini" });
+  const joystickKnob = el("div", { class: "joystickKnobMini" });
+  joystickFace.appendChild(joystickKnob);
+  joystickWrap.appendChild(joystickFace);
+  boardOverlays.appendChild(joystickWrap);
+
+  const editorBox = el("div", { class: "editorBox" });
+  const editorTop = el("div", { class: "editorTopMini" });
+  const modeTag = el("div", { class: "editorTag mono" });
+  modeTag.textContent = "ASM";
+  const runtimeBar = el("div", { class: "runtimeBar mono" });
+  editorTop.append(modeTag, runtimeBar);
+  editorBox.appendChild(editorTop);
+
+  const editorShell = el("div", { class: "editorShell" });
+  const lineNumbers = el("pre", { class: "lineNumbers mono" });
+  const execMarker = el("div", { class: "execMarker", title: "Current instruction" });
+  const editorStack = el("div", { class: "editorStack" });
+  const codeHighlight = el("pre", { class: "codeHighlight mono" });
+  const editor = el("textarea", { class: "editorText spellcheck-false" }) as HTMLTextAreaElement;
+  const scrollSlider = el("div", { class: "editorScrollSlider" });
+  const scrollThumb = el("div", { class: "editorScrollThumb" });
+  scrollSlider.appendChild(scrollThumb);
+  editor.spellcheck = false;
+  editorStack.append(codeHighlight, editor);
+  editorShell.append(lineNumbers, execMarker, editorStack, scrollSlider);
+  editorBox.appendChild(editorShell);
+
+  const statusStrip = el("div", { class: "statusStrip mono" });
+  editorBox.appendChild(statusStrip);
+  editorPane.appendChild(editorBox);
+
+  const splitHandle = el("div", { class: "splitHandle", title: "Resize" });
+  splitHandle.appendChild(el("div", { class: "splitDot" }));
+  windowCard.appendChild(splitHandle);
+
+  const messagesPane = el("section", { class: "messagesPane" });
+  const messagesHead = el("div", { class: "messagesHead" });
+  const messagesTitle = el("div", { class: "messagesTitle" });
+  messagesTitle.textContent = "Output";
+  const messagesMeta = el("div", { class: "messagesMeta mono" });
+  messagesHead.append(messagesTitle, messagesMeta);
+  messagesPane.appendChild(messagesHead);
+
+  const messagesBody = el("div", { class: "messagesBody" });
+  messagesPane.appendChild(messagesBody);
+  windowCard.appendChild(messagesPane);
+
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("No 2d context");
+  const drawContext = context;
+
+  let currentHex = "";
+  let drag = false;
+  let joystickDrag = false;
+  let joystickX = 2048;
+  let joystickY = 2048;
+  let isRunning = false;
+  let currentSpeed = 1;
+  let sourceMode: "asm" | "c" = "asm";
+  let programLoaded = false;
+  cpu.setSpeed(speedToBatch(currentSpeed));
+  let editorScrollDrag = false;
+  let currentPcToLine: Array<{ pc: number; line: number }> = [];
+  let lastUiUpdateTs = 0;
+  let lastDebugUpdateTs = 0;
+  let debugOpen = false;
+  let inputDebounce: number | null = null;
+
+  editor.addEventListener("input", () => {
+    programLoaded = false;
+    updateLineNumbers();
+    syncEditorScrollSlider();
+    if (inputDebounce != null) window.clearTimeout(inputDebounce);
+    inputDebounce = window.setTimeout(() => {
+      updateSyntaxHighlight();
+      compileAndRender(false);
+      inputDebounce = null;
+    }, 120);
+  });
+  editor.addEventListener("paste", (event) => {
+    const clip = event.clipboardData?.getData("text");
+    if (!clip) return;
+    event.preventDefault();
+    const normalized = normalizeEditorText(clip);
+    const start = editor.selectionStart ?? 0;
+    const end = editor.selectionEnd ?? 0;
+    editor.setRangeText(normalized, start, end, "end");
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  modeSelect.addEventListener("change", () => {
+    sourceMode = modeSelect.value === "c" ? "c" : "asm";
+    modeTag.textContent = sourceMode.toUpperCase();
+    programLoaded = false;
+    updateSyntaxHighlight();
+    compileAndRender(true);
+  });
+
+  editor.addEventListener("scroll", () => {
+    lineNumbers.scrollTop = editor.scrollTop;
+    syncHighlightScroll();
+    syncEditorScrollSlider();
+    syncExecMarker();
+  });
+  editorShell.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+      editor.scrollTop += event.deltaY;
+      lineNumbers.scrollTop = editor.scrollTop;
+      syncEditorScrollSlider();
+      syncExecMarker();
+    },
+    { passive: false },
+  );
+  scrollSlider.addEventListener("pointerdown", (event) => {
+    editorScrollDrag = true;
+    scrollSlider.setPointerCapture(event.pointerId);
+    updateEditorScrollFromPointer(event);
+  });
+  scrollSlider.addEventListener("pointermove", (event) => {
+    if (!editorScrollDrag) return;
+    updateEditorScrollFromPointer(event);
+  });
+  scrollSlider.addEventListener("pointerup", () => {
+    editorScrollDrag = false;
+  });
+  scrollSlider.addEventListener("pointercancel", () => {
+    editorScrollDrag = false;
+  });
+  splitHandle.addEventListener("pointerdown", (event) => {
+    drag = true;
+    splitHandle.setPointerCapture(event.pointerId);
+  });
+  splitHandle.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    const rect = windowCard.getBoundingClientRect();
+    const desired = Math.max(28, Math.min(280, rect.bottom - event.clientY));
+    windowCard.style.setProperty("--messages-height", `${desired}px`);
+  });
+  splitHandle.addEventListener("pointerup", () => {
+    drag = false;
+  });
+
+  joystickFace.addEventListener("pointerdown", (event) => {
+    joystickDrag = true;
+    joystickFace.setPointerCapture(event.pointerId);
+    updateJoystickFromPointer(event);
+  });
+  joystickFace.addEventListener("pointermove", (event) => {
+    if (!joystickDrag) return;
+    updateJoystickFromPointer(event);
+  });
+  const releaseJoystick = () => {
+    joystickDrag = false;
+    joystickX = 2048;
+    joystickY = 2048;
+    syncJoystick();
+  };
+  joystickFace.addEventListener("pointerup", releaseJoystick);
+  joystickFace.addEventListener("pointercancel", releaseJoystick);
+
+  traceBtn.addEventListener("click", () => {
+    debugOpen = true;
+    debugModal.classList.remove("hidden");
+    renderDebugPanel();
+  });
+  lcdTableBtn.addEventListener("click", () => {
+    window.open(
+      "https://www.alldatasheet.com/html-pdf/63673/HITACHI/HD44780/4513/18/HD44780.html",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
+  debugClose.addEventListener("click", () => {
+    debugOpen = false;
+    debugModal.classList.add("hidden");
+  });
+  // Keep runner open until user presses "Close" explicitly.
+
+  runBtn.addEventListener("click", async () => {
+    if (isRunning) {
+      cpu.stop();
+      isRunning = false;
+      board.reset();
+      await cpu.reset();
+      programLoaded = false;
+      joystickX = 2048;
+      joystickY = 2048;
+      syncJoystick();
+      syncRunButton();
+      updateRuntimeBar();
+      return;
+    }
+    const result = compileAndRender(true);
+    if (!result.ok) return;
+    if (!currentHex.trim()) {
+      showMessages([], "", true);
+      return;
+    }
+    await cpu.loadHex(currentHex);
+    programLoaded = true;
+    cpu.run();
+    isRunning = true;
+    syncRunButton();
+    updateRuntimeBar();
+  });
+
+  resetBtn.addEventListener("click", async () => {
+    cpu.stop();
+    isRunning = false;
+    board.reset();
+    await cpu.reset();
+    programLoaded = false;
+    syncRunButton();
+    updateRuntimeBar();
+  });
+
+  stepBtn.addEventListener("click", async () => {
+    const result = compileAndRender(false);
+    if (!result.ok) return;
+    if (!currentHex.trim()) {
+      showMessages([], "", true);
+      return;
+    }
+    if (!programLoaded) {
+      await cpu.loadHex(currentHex);
+      programLoaded = true;
+    }
+    cpu.step(1);
+    isRunning = false;
+    syncRunButton();
+    updateRuntimeBar();
+  });
+
+  function compileAndRender(expand = false): CompileResult {
+    if (sourceMode === "c") {
+      const c = checkC(editor.value);
+      if (!c.ok) {
+        currentHex = "";
+        currentPcToLine = [];
+        const summary = editor.value.trim() ? "errors" : "";
+        showMessages(c.diagnostics, summary, expand);
+        updateRuntimeBar(false);
+        return { ok: false, diagnostics: c.diagnostics, hex: "", pcToLine: [] };
+      }
+      const transpiled = transpileCToAsm(editor.value);
+      if (!transpiled.ok) {
+        currentHex = "";
+        currentPcToLine = [];
+        showMessages(transpiled.diagnostics, "errors", expand);
+        updateRuntimeBar(false);
+        return { ok: false, diagnostics: transpiled.diagnostics, hex: "", pcToLine: [] };
+      }
+      const asm = compileAsm(transpiled.asm);
+      currentHex = asm.hex;
+      currentPcToLine = [];
+      const merged = [...c.diagnostics.filter((d) => d.level !== "hint"), ...transpiled.diagnostics, ...asm.diagnostics];
+      const summary = editor.value.trim() ? (asm.ok ? "ok" : "errors") : "";
+      showMessages(merged, summary, expand);
+      updateRuntimeBar(asm.ok);
+      return { ok: asm.ok, diagnostics: merged, hex: asm.hex, pcToLine: [] };
+    }
+    const asm = compileAsm(editor.value);
+    const guideHints = buildAsmGuideHints(editor.value);
+    currentHex = asm.hex;
+    currentPcToLine = asm.pcToLine;
+    const summary = editor.value.trim() ? (asm.ok ? "ok" : "errors") : "";
+    showMessages([...asm.diagnostics, ...guideHints], summary, expand);
+    updateRuntimeBar(asm.ok);
+    return { ok: asm.ok, diagnostics: [...asm.diagnostics, ...guideHints], hex: asm.hex, pcToLine: asm.pcToLine };
+  }
+
+  function showMessages(list: AsmDiagnostic[], summary: string, expand = false) {
+    messagesBody.innerHTML = "";
+    const errors = list.filter((item) => item.level === "error").length;
+    const warnings = list.filter((item) => item.level === "warning").length;
+    messagesMeta.textContent = `${errors} / ${warnings}`;
+    for (const item of list) {
+      const row = el("div", { class: `messageRow ${item.level}` });
+      const line = item.line != null ? `L${item.line}` : "";
+      row.innerHTML = `<span class="mono">${line}</span><span>${item.message}</span>`;
+      messagesBody.appendChild(row);
+    }
+    if (expand) {
+      messagesBody.scrollTop = 0;
+    }
+    statusStrip.textContent = summary;
+  }
+
+  function updateRuntimeBar(ok = true) {
+    isRunning = cpu.isRunning();
+    const flow = buildExecFlow(cpu.getTrace(64), cpu.getPC(), currentPcToLine);
+    syncRunButton();
+    runtimeBar.textContent = [
+      !ok ? "ERROR" : cpu.isRunning() ? "RUNNING" : "READY",
+      `PC ${hexWord(cpu.getPC())}`,
+      `OP ${hexByte(cpu.readCode(cpu.getPC()))}`,
+      decodeInstruction(cpu),
+      `ACC ${hexByte(cpu.getSfr(SFR.acc))}`,
+      `P0 ${hexByte(board.readPort("P0"))}`,
+      `P2 ${hexByte(board.readPort("P2"))}`,
+      `x${currentSpeed}`,
+      cpu.isRunning() ? "RUN" : "STOP",
+    ].join("   ");
+    renderDebugPanel();
+    syncExecMarker();
+  }
+
+  function renderDebugPanel() {
+    if (!debugOpen) return;
+    const now = performance.now();
+    if (cpu.isRunning() && now - lastDebugUpdateTs < 240) return;
+    lastDebugUpdateTs = now;
+
+    const trace = cpu.getTrace(64);
+    const traceRows = trace.slice(-18).map((item) => {
+      return `${String(item.tick).padStart(7, " ")}  PC ${hexWord(item.pc)}  OP ${hexByte(item.opcode)}  ACC ${hexByte(item.acc)}  P0 ${hexByte(item.p0)}  P2 ${hexByte(item.p2)}`;
+    });
+    const flow = buildExecFlow(trace, cpu.getPC(), currentPcToLine);
+    const psw = cpu.getSfr(SFR.psw);
+    const bank = (psw >> 3) & 0x03;
+    const regBase = bank * 8;
+    const regsR = Array.from({ length: 8 }, (_, i) => `R${i}=${hexByte(cpu.readIram(regBase + i))}`);
+    const regs = [
+      `PC=${hexWord(cpu.getPC())}`,
+      `ACC=${hexByte(cpu.getSfr(SFR.acc))}`,
+      `B=${hexByte(cpu.getSfr(SFR.b))}`,
+      `PSW=${hexByte(psw)}`,
+      `P0=${hexByte(cpu.getSfr(SFR.p0))}`,
+      `P1=${hexByte(cpu.getSfr(SFR.p1))}`,
+      `P2=${hexByte(cpu.getSfr(SFR.p2))}`,
+      `P3=${hexByte(cpu.getSfr(SFR.p3))}`,
+      `SP=${hexByte(cpu.getSfr(SFR.sp))}`,
+      `DPH=${hexByte(cpu.getSfr(SFR.dph))}`,
+      `DPL=${hexByte(cpu.getSfr(SFR.dpl))}`,
+      `IE=${hexByte(cpu.getSfr(SFR.ie))}`,
+      `IP=${hexByte(cpu.getSfr(SFR.ip))}`,
+      `TCON=${hexByte(cpu.getSfr(SFR.tcon))}`,
+      `TMOD=${hexByte(cpu.getSfr(SFR.tmod))}`,
+      `ADCCON1=${hexByte(cpu.getSfr(0xef))}`,
+      `ADCCON2=${hexByte(cpu.getSfr(0xd8))}`,
+      `ADCDATAL=${hexByte(cpu.getSfr(0xd9))}`,
+      `ADCDATAH=${hexByte(cpu.getSfr(0xda))}`,
+    ];
+    const iram: string[] = [];
+    for (let i = 0; i < 32; i += 8) {
+      const row = [0, 1, 2, 3, 4, 5, 6, 7]
+        .map((d) => hexByte(cpu.readIram(i + d)))
+        .join(" ");
+      iram.push(`${hexByte(i)}: ${row}`);
+    }
+    const sp = cpu.getSfr(SFR.sp);
+    const spDelta = ((sp - 0x07) & 0xff).toString(10);
+    const stackTop = [0, 1, 2, 3, 4, 5]
+      .map((d) => {
+        const addr = (sp - d) & 0xff;
+        return `${hexByte(addr)}=${hexByte(cpu.readIram(addr))}`;
+      })
+      .join("  ");
+    const xram = [0, 1, 2, 3, 4, 5, 6, 7]
+      .map((d) => hexByte(cpu.readXram(d)))
+      .join(" ");
+    const pressedKeys = board
+      .getPressedKeys()
+      .map((idx) => ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"][idx] ?? "?")
+      .join(" ");
+    const keypadBus = board.getKeypadBusPreview();
+    const p36 = ((cpu.getSfr(SFR.p3) >> 6) & 1) === 1 ? "TX" : "RX";
+    const joy = board.getJoystick();
+    const lcdRows: string[] =
+      typeof board.extraDevices.lcd?.getDebugRows === "function"
+        ? board.extraDevices.lcd.getDebugRows()
+        : [];
+    debugBody.textContent = [
+      "INPUTS / BUS",
+      `  P3.6 mode: ${p36}   pressed: ${pressedKeys || "-"}`,
+      `  keypad bus: col1=${hexByte(keypadBus.col1)}  col2=${hexByte(keypadBus.col2)}  col3=${hexByte(keypadBus.col3)}`,
+      `  joystick: X=${joy.x}  Y=${joy.y}`,
+      "",
+      "LCD CELLS",
+      ...lcdRows,
+      "",
+      "EXEC FLOW",
+      `  ${flow.current}`,
+      `  ${flow.line}`,
+      `  code range: ${flow.range}`,
+      `  inside range: ${flow.inRange}`,
+      `  last known: ${flow.lastKnown}`,
+      `  last CALL/RET: ${flow.lastCallRet}`,
+      `  same-PC streak: ${flow.streak}`,
+      `  recent PCs: ${flow.recent}`,
+      "",
+      "REGISTERS",
+      `  ${regs.slice(0, 4).join("  ")}`,
+      `  ${regs.slice(4, 8).join("  ")}`,
+      `  ${regs.slice(8, 12).join("  ")}`,
+      `  ${regs.slice(12, 16).join("  ")}`,
+      `  ${regs.slice(16).join("  ")}`,
+      `  SP delta from 0x07: +${spDelta}`,
+      `BANK${bank}:`,
+      `  ${regsR.slice(0, 4).join("  ")}`,
+      `  ${regsR.slice(4).join("  ")}`,
+      "",
+      `STACK TOP: ${stackTop}`,
+      `XRAM[00..07]: ${xram}`,
+      "",
+      "IRAM 0x00..0x1F",
+      ...iram,
+      "",
+      "TRACE",
+      ...traceRows,
+    ].join("\n");
+  }
+
+  function syncRunButton() {
+    runBtn.textContent = isRunning ? "Stop" : "Start";
+    runBtn.className = `topBtn ${isRunning ? "red" : "green"}`;
+  }
+
+  function setSpeed(speed: number) {
+    currentSpeed = speed;
+    cpu.setSpeed(speedToBatch(currentSpeed));
+    for (const item of speedButtons) {
+      item.node.className = `topBtn speed ${item.speed === currentSpeed ? "active" : ""}`.trim();
+    }
+    updateRuntimeBar();
+  }
+
+  function updateLineNumbers() {
+    const clean = trimTrailingEmptyLines(editor.value);
+    const count = Math.max(1, clean.split(/\r?\n/).length);
+    lineNumbers.textContent = Array.from({ length: count }, (_, index) => String(index + 1)).join("\n");
+    syncExecMarker();
+  }
+
+  function updateSyntaxHighlight() {
+    return;
+  }
+
+  function syncHighlightScroll() {
+    codeHighlight.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
+  }
+
+  function syncEditorScrollSlider() {
+    const maxTop = Math.max(1, editor.scrollHeight - editor.clientHeight);
+    const pct = Math.max(0, Math.min(100, (editor.scrollTop / maxTop) * 100));
+    const thumbHeight = scrollThumb.offsetHeight || 34;
+    const trackHeight = scrollSlider.clientHeight;
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+    scrollThumb.style.top = `${(pct / 100) * maxThumbTop}px`;
+  }
+
+  function syncExecMarker() {
+    if (sourceMode !== "asm" || !programLoaded || !currentPcToLine.length) {
+      execMarker.style.setProperty("--marker-opacity", "0");
+      return;
+    }
+    const pc = cpu.getPC() & 0xffff;
+    const hit = currentPcToLine.find((item) => item.pc === pc);
+    if (!hit) {
+      execMarker.style.setProperty("--marker-opacity", "0");
+      return;
+    }
+    const logicalLines = trimTrailingEmptyLines(editor.value).split(/\r?\n/).length;
+    if (hit.line > logicalLines) {
+      execMarker.style.setProperty("--marker-opacity", "0");
+      return;
+    }
+    const lineHeight = 13 * 1.55;
+    const y = 10 + (hit.line - 1) * lineHeight - editor.scrollTop + lineHeight / 2 - 4;
+    if (y < -8 || y > editor.clientHeight + 8) {
+      execMarker.style.setProperty("--marker-opacity", "0");
+      return;
+    }
+    execMarker.style.setProperty("--marker-top", `${Math.round(y)}px`);
+    execMarker.style.setProperty("--marker-opacity", "1");
+  }
+
+  function updateEditorScrollFromPointer(event: PointerEvent) {
+    const rect = scrollSlider.getBoundingClientRect();
+    const thumbHeight = scrollThumb.offsetHeight || 34;
+    const y = Math.max(
+      0,
+      Math.min(rect.height - thumbHeight, event.clientY - rect.top - thumbHeight / 2),
+    );
+    const pct = rect.height > thumbHeight ? y / (rect.height - thumbHeight) : 0;
+    const maxTop = Math.max(1, editor.scrollHeight - editor.clientHeight);
+    editor.scrollTop = pct * maxTop;
+  }
+
+  function syncJoystick() {
+    board.setJoystick(joystickX, joystickY);
+    const centerX = 50;
+    const centerY = 50;
+    const movePct = 34;
+    const nx = (joystickX - 2048) / 2047;
+    const ny = (joystickY - 2048) / 2047;
+    joystickKnob.style.left = `${centerX + nx * movePct}%`;
+    joystickKnob.style.top = `${centerY + ny * movePct}%`;
+  }
+
+  function updateJoystickFromPointer(event: PointerEvent) {
+    const rect = joystickFace.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const knobRadius = 17;
+    const maxR = Math.max(6, Math.min(rect.width, rect.height) / 2 - knobRadius - 2);
+    let dx = event.clientX - rect.left - cx;
+    let dy = event.clientY - rect.top - cy;
+    const r = Math.hypot(dx, dy);
+    if (r > maxR) {
+      const scale = maxR / r;
+      dx *= scale;
+      dy *= scale;
+    }
+    const nx = dx / maxR;
+    const ny = dy / maxR;
+    joystickX = Math.round(2048 + nx * 2047);
+    joystickY = Math.round(2048 + ny * 2047);
+    syncJoystick();
+  }
+
+
+
+  function draw() {
+    board.render(drawContext, canvas.width, canvas.height);
+    const now = performance.now();
+    if (!cpu.isRunning() || now - lastUiUpdateTs >= 100) {
+      updateRuntimeBar();
+      lastUiUpdateTs = now;
+    }
+    window.requestAnimationFrame(draw);
+  }
+
+  updateLineNumbers();
+  updateSyntaxHighlight();
+  syncEditorScrollSlider();
+  compileAndRender(false);
+  syncJoystick();
+  window.requestAnimationFrame(draw);
+
+  return root;
+}
+
+function option(value: string, label: string): HTMLOptionElement {
+  const node = document.createElement("option");
+  node.value = value;
+  node.textContent = label;
+  return node;
+}
+
+function caption(text: string): HTMLDivElement {
+  const node = el("div", { class: "boardCaption mono" });
+  node.textContent = text;
+  return node;
+}
+
+function button(text: string, tone = ""): HTMLButtonElement {
+  const node = el("button", { class: `topBtn ${tone}`.trim() }) as HTMLButtonElement;
+  node.textContent = text;
+  return node;
+}
+
+function hexByte(value: number): string {
+  return "0x" + (value & 0xff).toString(16).padStart(2, "0").toUpperCase();
+}
+
+function hexWord(value: number): string {
+  return "0x" + (value & 0xffff).toString(16).padStart(4, "0").toUpperCase();
+}
+
+function speedToBatch(speed: number): number {
+  // 1x should feel close to real board refresh speed.
+  return Math.max(1, Math.round(speed * 16700));
+}
+
+function buildAsmGuideHints(source: string): AsmDiagnostic[] {
+  const text = source.replace(/\r/g, "");
+  const hints: AsmDiagnostic[] = [];
+  const labelMap = collectLabels(text);
+
+  for (const [label, line] of labelMap) {
+    const selfCall = new RegExp(`\\b(?:acall|lcall|call)\\s+${escapeRegExp(label)}\\b`, "i");
+    const labelBlock = extractLabelBlock(text, label);
+    if (labelBlock && selfCall.test(labelBlock)) {
+      hints.push({
+        level: "warning",
+        line,
+        message: `Рекурсивний виклик '${label}' може ламати стек. Для затримки краще цикл на DJNZ без CALL себе.`,
+      });
+    }
+  }
+
+  if (/\bpush\b/i.test(text) || /\bpop\b/i.test(text)) {
+    hints.push({
+      level: "hint",
+      message: "PUSH/POP у delay часто дає stack overflow. Якщо є виліт PC — заміни на простий DJNZ-цикл без PUSH/POP.",
+    });
+  }
+  if (/\bpush\s+_?temp0\b/i.test(text) || /\bpop\s+_?temp0\b/i.test(text)) {
+    hints.push({
+      level: "warning",
+      message: "У цьому симуляторі `_Temp0` у PUSH/POP часто ламає стек у long-loop. Краще: `MOV R2,#...` + `DJNZ R2,label` без PUSH/POP.",
+    });
+  }
+
+  if (/\bcolumn_1\b/i.test(text) && !/\bwaitrel\b/i.test(text)) {
+    hints.push({
+      level: "hint",
+      message: "Для стабільної клавіатури додай блок WAITREL (чекати відпускання кнопки), інакше події дублюються.",
+    });
+  }
+
+  if (/\bmov\s+p2\s*,\s*adr\b/i.test(text) && !/\bmov\s+p2\s*,\s*#0x?0+\b/i.test(text)) {
+    hints.push({
+      level: "warning",
+      message: "Для запису на LCD/ST841 після `MOV P2,ADR` обов'язково має бути latch `MOV P2,#0x00`.",
+    });
+  }
+
+  if (!/\borg\b/i.test(text)) {
+    hints.push({
+      level: "warning",
+      message: "Немає ORG. Додай `ORG 0x0000`, щоб старт адреси був коректний.",
+    });
+  }
+
+  return hints;
+}
+
+function collectLabels(source: string): Map<string, number> {
+  const lines = source.split("\n");
+  const out = new Map<string, number>();
+  for (let i = 0; i < lines.length; i++) {
+    const clean = lines[i].replace(/;.*$/, "").trim();
+    const m = /^([A-Za-z_.$?][\w.$?]*):/.exec(clean);
+    if (m) out.set(m[1], i + 1);
+  }
+  return out;
+}
+
+function extractLabelBlock(source: string, label: string): string | null {
+  const lines = source.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (new RegExp(`^\\s*${escapeRegExp(label)}\\s*:`).test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\s*[A-Za-z_.$?][\w.$?]*\s*:/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatCount(value: number): string {
+  if (value < 1_000) return String(value);
+  if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}k`;
+  if (value < 1_000_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  return `${(value / 1_000_000_000).toFixed(1)}G`;
+}
+
+function decodeInstruction(cpu: EmuBoardController): string {
+  const pc = cpu.getPC();
+  const op = cpu.readCode(pc);
+  if (op >= 0x78 && op <= 0x7f) return `MOV R${op - 0x78},#${hexByte(cpu.readCode(pc + 1))}`;
+  if (op >= 0xd8 && op <= 0xdf) return `DJNZ R${op - 0xd8}`;
+  if (op === 0x00) return "NOP";
+  if (op === 0x02) return `LJMP ${hexWord((cpu.readCode(pc + 1) << 8) | cpu.readCode(pc + 2))}`;
+  if (op === 0x03) return "RR A";
+  if (op === 0x12) return `LCALL ${hexWord((cpu.readCode(pc + 1) << 8) | cpu.readCode(pc + 2))}`;
+  if (op === 0x22) return "RET";
+  if (op === 0x32) return "RETI";
+  if (op === 0x74) return `MOV A,#${hexByte(cpu.readCode(pc + 1))}`;
+  if (op === 0x75) return `MOV ${hexByte(cpu.readCode(pc + 1))},#${hexByte(cpu.readCode(pc + 2))}`;
+  if (op === 0x80) return "SJMP";
+  if (op === 0xa0) return "ORL C,/bit";
+  if (op === 0xd2) return `SETB ${hexByte(cpu.readCode(pc + 1))}`;
+  if (op === 0xf5) return `MOV ${hexByte(cpu.readCode(pc + 1))},A`;
+  if (op >= 0xe8 && op <= 0xef) return `MOV A,R${op - 0xe8}`;
+  return "EXEC";
+}
+
+function buildExecFlow(
+  trace: Array<{ pc: number; opcode: number; acc: number; p0: number; p2: number; tick: number }>,
+  currentPc: number,
+  pcToLine: Array<{ pc: number; line: number }>,
+): {
+  current: string;
+  line: string;
+  streak: number;
+  recent: string;
+  range: string;
+  inRange: string;
+  lastKnown: string;
+  lastCallRet: string;
+} {
+  const pc = currentPc & 0xffff;
+  const hit = pcToLine.find((item) => item.pc === pc);
+  const line = hit ? `ASM line: ${hit.line}` : "ASM line: -";
+
+  let streak = 0;
+  for (let i = trace.length - 1; i >= 0; i--) {
+    if ((trace[i].pc & 0xffff) !== pc) break;
+    streak += 1;
+  }
+
+  const recentPcs = trace
+    .slice(-10)
+    .map((item) => hexWord(item.pc))
+    .join(" -> ");
+
+  const pcs = pcToLine.map((item) => item.pc & 0xffff);
+  const minPc = pcs.length ? Math.min(...pcs) : 0;
+  const maxPc = pcs.length ? Math.max(...pcs) : 0;
+  // ROM is full 64K space on 8051. Gaps between ORG blocks are valid and treated as NOP.
+  const inKnownRange = pc >= 0x0000 && pc <= 0xffff;
+  const prevKnown = pcToLine
+    .filter((item) => (item.pc & 0xffff) <= pc)
+    .sort((a, b) => b.pc - a.pc)[0];
+
+  const lastCallRetTrace = [...trace]
+    .reverse()
+    .find((item) => isCallRetOpcode(item.opcode));
+  const lastCallRet = lastCallRetTrace
+    ? `${hexWord(lastCallRetTrace.pc)} OP ${hexByte(lastCallRetTrace.opcode)} ${decodeOpcodeName(lastCallRetTrace.opcode)}`
+    : "-";
+
+  return {
+    current: `current PC: ${hexWord(pc)}`,
+    line,
+    streak,
+    recent: recentPcs || "-",
+    range: "0x0000 .. 0xFFFF",
+    inRange: inKnownRange ? "yes" : "no",
+    lastKnown: prevKnown ? `PC ${hexWord(prevKnown.pc)} line ${prevKnown.line}` : "-",
+    lastCallRet,
+  };
+}
+
+function isCallRetOpcode(op: number): boolean {
+  const code = op & 0xff;
+  if (code === 0x12 || code === 0x22 || code === 0x32) return true;
+  return (code & 0x1f) === 0x11;
+}
+
+function decodeOpcodeName(op: number): string {
+  const code = op & 0xff;
+  if (code === 0x12) return "LCALL";
+  if ((code & 0x1f) === 0x11) return "ACALL";
+  if (code === 0x22) return "RET";
+  if (code === 0x32) return "RETI";
+  return "OP";
+}
+
+function trimTrailingEmptyLines(text: string): string {
+  const normalized = text.replace(/\r/g, "");
+  const trimmed = normalized.replace(/\n+$/g, "");
+  return trimmed.length ? trimmed : "";
+}
+
+function normalizeEditorText(text: string): string {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  return normalized.replace(/\n{3,}/g, "\n\n");
+}
+
+function highlightAsm(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => highlightAsmLine(line))
+    .join("\n");
+}
+
+function highlightC(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => highlightCLine(line))
+    .join("\n");
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function highlightAsmLine(line: string): string {
+  const commentPos = line.indexOf(";");
+  const code = commentPos >= 0 ? line.slice(0, commentPos) : line;
+  const comment = commentPos >= 0 ? line.slice(commentPos) : "";
+
+  const tokenRe = /\b(mov|movc|movx|setb|clr|cpl|anl|orl|xrl|add|addc|subb|inc|dec|djnz|cjne|sjmp|jmp|ljmp|acall|lcall|call|ret|reti|nop|rr|rl|rrc|rlc|swap|mul|div|push|pop|jb|jnb|jbc|jz|jnz|jc|jnc|org|equ|db|end)\b|\b(a|acc|b|dptr|dpl|dph|psw|sp|p[0-3]|r[0-7]|ie|ip|tcon|tmod|th0|tl0|th1|tl1|scon|sbuf)\b|#?0x[0-9a-f]+\b|#?[01]+b\b|#?\d+\b|#?[0-9a-f]+h\b/gi;
+  let out = "";
+  let index = 0;
+  for (const match of code.matchAll(tokenRe)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    out += escapeHtml(code.slice(index, start));
+    if (/^(mov|movc|movx|setb|clr|cpl|anl|orl|xrl|add|addc|subb|inc|dec|djnz|cjne|sjmp|jmp|ljmp|acall|lcall|call|ret|reti|nop|rr|rl|rrc|rlc|swap|mul|div|push|pop|jb|jnb|jbc|jz|jnz|jc|jnc|org|equ|db|end)$/i.test(token)) {
+      out += `<span class="tok-key">${escapeHtml(token)}</span>`;
+    } else if (/^(a|acc|b|dptr|dpl|dph|psw|sp|p[0-3]|r[0-7]|ie|ip|tcon|tmod|th0|tl0|th1|tl1|scon|sbuf)$/i.test(token)) {
+      out += `<span class="tok-reg">${escapeHtml(token)}</span>`;
+    } else {
+      out += `<span class="tok-num">${escapeHtml(token)}</span>`;
+    }
+    index = start + token.length;
+  }
+  out += escapeHtml(code.slice(index));
+  if (comment) out += `<span class="tok-comment">${escapeHtml(comment)}</span>`;
+  return out;
+}
+
+function highlightCLine(line: string): string {
+  const commentPos = line.indexOf("//");
+  const code = commentPos >= 0 ? line.slice(0, commentPos) : line;
+  const comment = commentPos >= 0 ? line.slice(commentPos) : "";
+  const tokenRe = /\b(void|int|char|short|long|unsigned|signed|if|else|for|while|do|switch|case|break|continue|return|typedef|struct|enum|static|const|volatile|sbit)\b|0x[0-9a-f]+\b|0b[01]+\b|\b\d+\b|"(?:[^"\\]|\\.)*"/gi;
+  let out = "";
+  let index = 0;
+  for (const match of code.matchAll(tokenRe)) {
+    const token = match[0];
+    const start = match.index ?? 0;
+    out += escapeHtml(code.slice(index, start));
+    if (/^"/.test(token)) {
+      out += `<span class="tok-str">${escapeHtml(token)}</span>`;
+    } else if (/^(void|int|char|short|long|unsigned|signed|if|else|for|while|do|switch|case|break|continue|return|typedef|struct|enum|static|const|volatile|sbit)$/i.test(token)) {
+      out += `<span class="tok-key">${escapeHtml(token)}</span>`;
+    } else {
+      out += `<span class="tok-num">${escapeHtml(token)}</span>`;
+    }
+    index = start + token.length;
+  }
+  out += escapeHtml(code.slice(index));
+  if (comment) out += `<span class="tok-comment">${escapeHtml(comment)}</span>`;
+  return out;
+}
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  attrs: Record<string, string> = {},
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    node.setAttribute(key, value);
+  }
+  return node;
+}
+
+
+
+
+===== FILE: src/vm/emuBoardController.ts =====
+
+import { Board } from "./board";
+import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm";
+import { SFR, ST841_MAP } from "./st841Map";
+
+export class EmuBoardController {
+  private emu: Emu8051Wasm | null = null;
+  private rafId = 0;
+  private running = false;
+  private adcPending: { channel: number; ticksLeft: number } | null = null;
+  private instructions = 0;
+  private batchSize = 184320;
+  private static readonly TIMER0_ACCEL = 6;
+  private static readonly TRACE_SAMPLE_WHILE_RUN = 64;
+  private trace: Array<{
+    pc: number;
+    opcode: number;
+    acc: number;
+    p0: number;
+    p2: number;
+    tick: number;
+  }> = [];
+
+  constructor(private board: Board) {}
+
+  async init(): Promise<void> {
+    if (!this.emu) {
+      this.emu = await Emu8051Wasm.create();
+      this.seedPorts();
+    }
+  }
+
+  async reset(): Promise<void> {
+    await this.init();
+    this.stop();
+    this.emu?.reset(true);
+    this.adcPending = null;
+    this.instructions = 0;
+    this.trace = [];
+    this.seedPorts();
+    this.syncCpuToBoard();
+  }
+
+  async loadHex(hexText: string): Promise<number> {
+    await this.reset();
+    const image = parseIntelHex(hexText);
+    if (image.length >= 2) {
+      let minAddr = 0xffff;
+      let maxAddr = 0x0000;
+      for (let i = 0; i < image.length; i += 2) {
+        const addr = image[i] ?? 0;
+        if (addr < minAddr) minAddr = addr;
+        if (addr > maxAddr) maxAddr = addr;
+      }
+      // Fill ORG gaps with NOP (0x00) so sparse code layout behaves like real ROM.
+      for (let addr = minAddr; addr <= maxAddr; addr++) {
+        this.emu?.writeCode(addr, 0x00);
+      }
+    }
+    for (let i = 0; i < image.length; i += 2) {
+      const addr = image[i] ?? 0;
+      const value = image[i + 1] ?? 0;
+      this.emu?.writeCode(addr, value);
+    }
+    this.syncCpuToBoard();
+    return image.length / 2;
+  }
+
+  step(instructions = 1): void {
+    if (!this.emu) return;
+    for (let index = 0; index < instructions; index++) {
+      const pc = this.emu.getPC() & 0xffff;
+      const opcode = this.emu.readCode(pc) & 0xff;
+      this.syncBoardInputsToCpu();
+      if (this.emu.tick()) {
+        this.instructions += 1;
+        const shouldTrace =
+          !this.running ||
+          index % EmuBoardController.TRACE_SAMPLE_WHILE_RUN === 0;
+        if (shouldTrace) {
+          this.pushTrace({
+            pc,
+            opcode,
+            acc: this.emu.getSfr(SFR.acc) & 0xff,
+            p0: this.emu.getSfr(SFR.p0) & 0xff,
+            p2: this.emu.getSfr(SFR.p2) & 0xff,
+            tick: this.instructions,
+          });
+        }
+      }
+      this.syncCpuToBoard();
+    }
+  }
+
+  setSpeed(batchSize: number): void {
+    this.batchSize = Math.max(1, Math.min(500000, batchSize | 0));
+  }
+
+  run(batchSize = this.batchSize): void {
+    if (!this.emu || this.running) return;
+    this.batchSize = Math.max(1, Math.min(500000, batchSize | 0));
+    this.running = true;
+
+    const frame = () => {
+      if (!this.running) return;
+      this.step(this.batchSize);
+      this.rafId = window.requestAnimationFrame(frame);
+    };
+
+    this.rafId = window.requestAnimationFrame(frame);
+  }
+
+  stop(): void {
+    this.running = false;
+    if (this.rafId) {
+      window.cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+  }
+
+  isRunning(): boolean {
+    return this.running;
+  }
+
+  getPC(): number {
+    return this.emu?.getPC() ?? 0;
+  }
+
+  getSfr(addr: number): number {
+    return this.emu?.getSfr(addr) ?? 0;
+  }
+
+  readCode(addr: number): number {
+    return this.emu?.readCode(addr) ?? 0;
+  }
+
+  readIram(addr: number): number {
+    return this.emu?.readIram(addr) ?? 0;
+  }
+
+  readXram(addr: number): number {
+    return this.emu?.readXram(addr) ?? 0;
+  }
+
+  getInstructionCount(): number {
+    return this.instructions;
+  }
+
+  getTrace(limit = 40): Array<{
+    pc: number;
+    opcode: number;
+    acc: number;
+    p0: number;
+    p2: number;
+    tick: number;
+  }> {
+    const n = Math.max(1, Math.min(200, limit | 0));
+    return this.trace.slice(-n);
+  }
+
+  clearTrace(): void {
+    this.trace = [];
+  }
+
+  private seedPorts(): void {
+    this.emu?.setSfr(SFR.p0, 0xff);
+    // Start stack higher for large lab snippets with nested CALL/PUSH delays.
+    // Real 8051 reset SP is 0x07, but ST841 lab code is typically written with
+    // deeper helper routines and otherwise quickly corrupts low IRAM.
+    this.emu?.setSfr(SFR.sp, 0x2f);
+    this.emu?.setSfr(SFR.p2, 0x00);
+    this.emu?.setSfr(SFR.p3, 0xff);
+    this.emu?.setSfr(ST841_MAP.adc.adcon1, 0x00);
+    this.emu?.setSfr(ST841_MAP.adc.adcon2, 0x00);
+    this.emu?.setSfr(ST841_MAP.adc.dataLow, 0x00);
+    this.emu?.setSfr(ST841_MAP.adc.dataHigh, 0x00);
+  }
+
+  private syncBoardInputsToCpu(): void {
+    if (!this.emu) return;
+    this.serviceTimer0();
+    this.serviceAdc();
+
+    const p3 = this.emu.getSfr(SFR.p3);
+    this.board.applyCpuPorts({
+      p0: this.emu.getSfr(SFR.p0),
+      p2: this.emu.getSfr(SFR.p2),
+      p3,
+    });
+
+    // In RX mode the keypad / future peripherals drive P0.
+    if (((p3 >> 6) & 1) === 0) {
+      this.emu.setSfr(SFR.p0, this.board.readPort("P0"));
+    }
+  }
+
+  private syncCpuToBoard(): void {
+    if (!this.emu) return;
+    this.board.applyCpuPorts({
+      p0: this.emu.getSfr(SFR.p0),
+      p2: this.emu.getSfr(SFR.p2),
+      p3: this.emu.getSfr(SFR.p3),
+    });
+  }
+
+  private serviceAdc(): void {
+    if (!this.emu) return;
+
+    const adcon2 = this.emu.getSfr(ST841_MAP.adc.adcon2);
+    const channel = adcon2 & 0x0f;
+    const joystick = this.board.getJoystick();
+    const sample = this.readAdcChannel(channel, joystick);
+
+    this.emu.setSfr(ST841_MAP.adc.dataLow, sample & 0xff);
+    this.emu.setSfr(
+      ST841_MAP.adc.dataHigh,
+      ((channel & 0x0f) << 4) | ((sample >> 8) & 0x0f),
+    );
+
+    // Keep lab snippets unblocked: conversion is treated as always-ready.
+    const nextAdcon2 =
+      (this.emu.getSfr(ST841_MAP.adc.adcon2) & ~ST841_MAP.adc.sconvMask) |
+      ST841_MAP.adc.adciMask;
+    this.emu.setSfr(ST841_MAP.adc.adcon2, nextAdcon2);
+  }
+
+  private serviceTimer0(): void {
+    if (!this.emu) return;
+    const tcon = this.emu.getSfr(SFR.tcon) & 0xff;
+    const tmod = this.emu.getSfr(SFR.tmod) & 0xff;
+    const tr0 = (tcon & 0x10) !== 0;
+    if (!tr0) return;
+
+    const mode = tmod & 0x03;
+    if (mode !== 0x01) return; // Lab code uses 16-bit mode
+
+    let tl0 = this.emu.getSfr(SFR.tl0) & 0xff;
+    let th0 = this.emu.getSfr(SFR.th0) & 0xff;
+    for (let i = 0; i < EmuBoardController.TIMER0_ACCEL; i++) {
+      tl0 += 1;
+      if (tl0 > 0xff) {
+        tl0 = 0x00;
+        th0 += 1;
+        if (th0 > 0xff) {
+          th0 = 0x00;
+          this.emu.setSfr(SFR.tcon, (tcon | 0x20) & 0xff); // TF0=1
+        }
+      }
+    }
+    this.emu.setSfr(SFR.tl0, tl0 & 0xff);
+    this.emu.setSfr(SFR.th0, th0 & 0xff);
+  }
+
+  private readAdcChannel(
+    channel: number,
+    joystick: { x: number; y: number },
+  ): number {
+    switch (channel & 0x0f) {
+      case ST841_MAP.adc.xChannel:
+        return mapJoystickToLabLevel(joystick.x);
+      case ST841_MAP.adc.yChannel:
+        return mapJoystickToLabLevel(joystick.y);
+      case 0x00:
+        return joystick.x & 0x0fff;
+      case 0x01:
+        return joystick.y & 0x0fff;
+      case 0x0b:
+        return 0;
+      case 0x0c:
+        return 0x0fff;
+      default:
+        return 0x0800;
+    }
+  }
+
+  private pushTrace(entry: {
+    pc: number;
+    opcode: number;
+    acc: number;
+    p0: number;
+    p2: number;
+    tick: number;
+  }): void {
+    this.trace.push(entry);
+    if (this.trace.length > 400) {
+      this.trace.splice(0, this.trace.length - 400);
+    }
+  }
+}
+
+function mapJoystickToLabLevel(value: number): number {
+  // Lab 6 snippets compare THx against sparse values:
+  // 01,03,05,07,09,0B,0C,0E,0F.
+  // Map joystick to these stable buckets so indicator logic reacts reliably.
+  const levels = [0x01, 0x03, 0x05, 0x07, 0x09, 0x0b, 0x0c, 0x0e, 0x0f];
+  const clamped = Math.max(0, Math.min(4095, value | 0));
+  const idx = Math.round((clamped / 4095) * (levels.length - 1));
+  return ((levels[idx] & 0x0f) << 8) | 0x80;
+}
+
+
+
+
+===== FILE: src/vm/board.ts =====
+
+import { PeripheralBus } from "./peripheralBus";
+
+type PortName = "P0" | "P2" | "P3";
+
+export class Board {
+  public readonly bus = new PeripheralBus();
+
+  private ports = {
+    P0: 0xff,
+    P2: 0x00,
+    P3: 0xff,
+  };
+
+  private abortSignal: AbortSignal | null = null;
+
+  public extraDevices: Record<string, any> = {};
+
+  private joystick = { x: 2048, y: 2048 };
+  private keypadPressed = new Set<number>();
+  private keypadPulseTimers = new Map<number, number>();
+  private keypadReleaseGraceMs = 60;
+
+  reset(): void {
+    this.ports = { P0: 0xff, P2: 0x00, P3: 0xff };
+    this.joystick = { x: 2048, y: 2048 };
+    this.abortSignal = null;
+    this.keypadPressed.clear();
+    for (const handle of this.keypadPulseTimers.values()) {
+      window.clearTimeout(handle);
+    }
+    this.keypadPulseTimers.clear();
+    for (const device of Object.values(this.extraDevices)) {
+      if (device && typeof device.reset === "function") {
+        device.reset();
+      } else if (device && typeof device.clear === "function") {
+        device.clear();
+      }
+    }
+  }
+
+  setAbortSignal(signal: AbortSignal): void {
+    this.abortSignal = signal;
+  }
+
+  formatHex8(v: number): string {
+    return "0x" + (v & 0xff).toString(16).padStart(2, "0").toUpperCase();
+  }
+
+  readPort(name: PortName): number {
+    if (name === "P0") {
+      // RX mode: bus may drive P0 depending on current P2 address
+      if (this.readBit("P3", 6) === 0) {
+        const busVal = this.bus.read(this.ports.P2, {
+          joystick: this.joystick,
+          keypadPressed: this.getReadableKeys(),
+        });
+        if (busVal != null) {
+          return busVal & 0xff;
+        }
+      }
+    }
+    return this.ports[name] & 0xff;
+  }
+
+  getPortRaw(name: PortName): number {
+    return this.ports[name] & 0xff;
+  }
+
+  writePort(name: PortName, value: number): void {
+    const v = value & 0xff;
+    if (name === "P2") {
+      const prev = this.ports.P2 & 0xff;
+      if (prev === v) {
+        return;
+      }
+      this.ports.P2 = v;
+
+      // Latch pulse from the РјРµС‚РѕРґРёС‡РєР° examples:
+      //   mov P0, dat
+      //   mov P2, adr
+      //   mov P2, #0x00
+      // Only in TX mode (P3.6 = 1)
+      if (prev !== 0x00 && v === 0x00 && this.readBit("P3", 6) === 1) {
+        this.bus.write(prev, this.ports.P0);
+      }
+      return;
+    }
+    this.ports[name] = v;
+  }
+
+  applyCpuPorts(ports: { p0: number; p2: number; p3: number }): void {
+    // Keep the latch semantics centralized in writePort("P2", ...).
+    this.ports.P3 = ports.p3 & 0xff;
+    this.ports.P0 = ports.p0 & 0xff;
+    this.writePort("P2", ports.p2 & 0xff);
+  }
+
+  readBit(name: PortName, bit: number): 0 | 1 {
+    const v = (this.ports[name] >>> bit) & 1;
+    return (v ? 1 : 0) as 0 | 1;
+  }
+
+  writeBit(name: PortName, bit: number, value: 0 | 1): void {
+    const mask = 1 << bit;
+    const cur = this.ports[name] & 0xff;
+    this.ports[name] = value ? cur | mask : cur & ~mask;
+  }
+
+  async delay(ms: number): Promise<void> {
+    const clamped = Math.max(0, Math.min(60_000, ms | 0));
+    await new Promise<void>((resolve, reject) => {
+      const t = window.setTimeout(resolve, clamped);
+      const sig = this.abortSignal;
+      if (!sig) return;
+      const onAbort = () => {
+        window.clearTimeout(t);
+        sig.removeEventListener("abort", onAbort);
+        reject(new Error("Aborted"));
+      };
+      if (sig.aborted) return onAbort();
+      sig.addEventListener("abort", onAbort);
+    });
+  }
+
+  setJoystick(x: number, y: number): void {
+    this.joystick.x = clamp(x);
+    this.joystick.y = clamp(y);
+    this.extraDevices.adc?.set(this.joystick.x, this.joystick.y);
+  }
+
+  getJoystick(): { x: number; y: number } {
+    return { ...this.joystick };
+  }
+
+  keypadPress(index: number, hold = false): void {
+    this.keypadPressed.add(index);
+    const prevTimer = this.keypadPulseTimers.get(index);
+    if (prevTimer != null) {
+      window.clearTimeout(prevTimer);
+      this.keypadPulseTimers.delete(index);
+    }
+    if (!hold) {
+      // One-shot pulse for quick taps.
+      const handle = window.setTimeout(() => {
+        this.keypadPressed.delete(index);
+        this.keypadPulseTimers.delete(index);
+        this.extraDevices.keypad?.release(index);
+      }, 80);
+      this.keypadPulseTimers.set(index, handle);
+    }
+    this.extraDevices.keypad?.press(index);
+  }
+
+  keypadRelease(index: number): void {
+    const timer = this.keypadPulseTimers.get(index);
+    if (timer != null) {
+      window.clearTimeout(timer);
+      this.keypadPulseTimers.delete(index);
+    }
+    // Keep the key active a bit after pointer-up so matrix scan has time
+    // to sample the same physical press (close to real keypad behavior).
+    const handle = window.setTimeout(() => {
+      this.keypadPressed.delete(index);
+      this.keypadPulseTimers.delete(index);
+      this.extraDevices.keypad?.release(index);
+    }, this.keypadReleaseGraceMs);
+    this.keypadPulseTimers.set(index, handle);
+  }
+
+  getPressedKeys(): number[] {
+    return Array.from(this.keypadPressed)
+      .sort((a, b) => a - b);
+  }
+
+  getKeypadBusPreview(): { col1: number; col2: number; col3: number } {
+    const pressed = this.getReadableKeys();
+    const ctx = { joystick: this.joystick, keypadPressed: pressed };
+    const col1 = this.bus.read(0x60, ctx);
+    const col2 = this.bus.read(0x50, ctx);
+    const col3 = this.bus.read(0x30, ctx);
+    return {
+      col1: (col1 ?? 0xff) & 0xff,
+      col2: (col2 ?? 0xff) & 0xff,
+      col3: (col3 ?? 0xff) & 0xff,
+    };
+  }
+
+  private getReadableKeys(): Set<number> {
+    return new Set(this.keypadPressed);
+  }
+
+  render(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#101723";
+    ctx.fillRect(0, 0, w, h);
+
+    const boardX = 10;
+    const boardY = 10;
+    const boardW = w - 20;
+    const boardH = h - 20;
+
+    const boardFill = ctx.createLinearGradient(boardX, boardY, boardX + boardW, boardY + boardH);
+    boardFill.addColorStop(0, "#245748");
+    boardFill.addColorStop(0.55, "#296353");
+    boardFill.addColorStop(1, "#193d34");
+    ctx.fillStyle = boardFill;
+    roundRect(ctx, boardX, boardY, boardW, boardH, 14, true, false);
+    ctx.save();
+    ctx.beginPath();
+    roundRect(ctx, boardX, boardY, boardW, boardH, 14, false, false);
+    ctx.clip();
+    this.extraDevices.sevenSeg?.render(ctx, boardX + boardW - 282, boardY + 34);
+    this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 148);
+    this.extraDevices.matrix?.render(ctx, boardX + 72, boardY + 256);
+    this.extraDevices.lcd?.render(ctx, boardX + boardW - 306, boardY + 252);
+    ctx.restore();
+
+  }
+}
+
+function clamp(v: number): number {
+  return Math.max(0, Math.min(4095, v | 0));
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+  fill: boolean,
+  stroke: boolean,
+): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  if (fill) ctx.fill();
+  if (stroke) ctx.stroke();
+}
+
+
+
+
+===== FILE: src/vm/devices/keypad4x3.ts =====
+
+export class Keypad4x3 {
+  private pressed = new Set<number>(); // 0..11
+
+  press(index: number): void {
+    this.pressed.add(index);
+  }
+  release(index: number): void {
+    this.pressed.delete(index);
+  }
+
+  read(addr: number, pressedFromBoard: Set<number>): number | null {
+    const col = decodeCol(addr);
+    if (col == null) return null;
+    return readP0ForCol(col, pressedFromBoard);
+  }
+}
+
+function decodeCol(addr: number): 0 | 1 | 2 | null {
+  const a = addr & 0xff;
+  // From PDF text: 0xEF / 0xDF / 0xBF.
+  if (a === 0xef || (a & 0xf0) === 0xe0) return 0;
+  if (a === 0xdf || (a & 0xf0) === 0xd0) return 1;
+  if (a === 0xbf || (a & 0xf0) === 0xb0) return 2;
+  // From code sample: 0x60 / 0x50 / 0x30.
+  if (a === 0x60) return 0;
+  if (a === 0x50) return 1;
+  if (a === 0x30) return 2;
+  return null;
+}
+
+function readP0ForCol(col: 0 | 1 | 2, pressed: Set<number>): number {
+  // P0.0..P0.3 = rows, active-low.
+  let p0 = 0xff;
+  for (let row = 0; row < 4; row++) {
+    const idx = col + row * 3;
+    if (pressed.has(idx)) p0 &= ~(1 << row);
+  }
+  return p0 & 0xff;
+}
+
+
+
+
+
+===== FILE: src/vm/devices/lcd16x2.ts =====
+
+import type { BusDevice } from "../peripheralBus";
+
+const LCD_ROWS = 4;
+const LCD_COLS = 10;
+const LCD_SHOW_DOT_GRID = false;
+const LCD_LINE_BASES = [0x00, 0x40, 0x0a, 0x4a] as const;
+const LCD_LINE_BASES_ALT = [0x00, 0x40, 0x14, 0x54] as const;
+const LCD_CHAR_MAP: Record<number, string> = {
+  0xa0: "Р‘",
+  0xa1: "Р“",
+  0xa2: "Р•",
+  0xa3: "Р–",
+  0xa4: "Р—",
+  0xa5: "Р",
+  0xa6: "Р™",
+  0xa7: "Р›",
+  0xa8: "Рџ",
+  0xa9: "РЈ",
+  0xaa: "Р¤",
+  0xab: "Р§",
+  0xac: "РЁ",
+  0xad: "Р¬",
+  0xae: "Р«",
+  0xaf: "Р­",
+  0xb0: "Р®",
+  0xb1: "РЇ",
+  0xb2: "Р±",
+  0xb3: "РІ",
+  0xb4: "Рі",
+  0xb5: "С‘",
+  0xb6: "Р¶",
+  0xb7: "Р·",
+  0xb8: "Рё",
+  0xb9: "Р№",
+  0xba: "Рє",
+  0xbb: "Р»",
+  0xbc: "Рј",
+  0xbd: "РЅ",
+  0xbe: "Рї",
+  0xbf: "С‚",
+  0xc0: "С‡",
+  0xc1: "С€",
+  0xc2: "СЊ",
+  0xc3: "С‹",
+  0xc4: "СЉ",
+  0xc5: "СЌ",
+  0xc6: "СЋ",
+  0xc7: "СЏ",
+  0xca: "С”",
+  0xcb: "Т‘",
+  0xcd: "СЃ",
+  0xce: "Т‘",
+  0xcf: "в‚¬",
+  0xe0: "Р”",
+  0xe1: "Р¦",
+  0xe2: "Р©",
+  0xe3: "РЇ",
+  0xe4: "С„",
+  0xe5: "С†",
+  0xe6: "С€",
+  0xea: "С”",
+  0xeb: "Р„",
+  0xec: "Рё",
+  0xed: "Рґ",
+  0xee: "Г—",
+  0xef: "Рѕ",
+  0xf0: "РЈ",
+  0xf1: "Р§",
+  0xf2: "Р§",
+  0xf3: "Р§",
+  0xf4: "Рќ",
+  0xf5: "\"",
+  0xf6: "Рґ",
+  0xfd: "Р±",
+  0xfe: "РЇ",
+  0xff: "в–€",
+};
+
+Object.assign(LCD_CHAR_MAP, {
+  0xa0: "Р‘",
+  0xa1: "Р“",
+  0xa2: "Р•",
+  0xa3: "Р–",
+  0xa4: "Р—",
+  0xa5: "Р",
+  0xa6: "Р™",
+  0xa7: "Р›",
+  0xa8: "Рџ",
+  0xa9: "РЈ",
+  0xaa: "Р¤",
+  0xab: "Р§",
+  0xac: "РЁ",
+  0xad: "Р¬",
+  0xae: "Р«",
+  0xaf: "Р­",
+  0xb0: "Р®",
+  0xb1: "РЇ",
+  0xb2: "Р±",
+  0xb3: "РІ",
+  0xb4: "Рі",
+  0xb5: "С‘",
+  0xb6: "Р¶",
+  0xb7: "Р·",
+  0xb8: "Рё",
+  0xb9: "Р№",
+  0xba: "Рє",
+  0xbb: "Р»",
+  0xbc: "Рј",
+  0xbd: "РЅ",
+  0xbe: "Рї",
+  0xbf: "С‚",
+  0xc0: "С‡",
+  0xc1: "С€",
+  0xc2: "СЊ",
+  0xc3: "С‹",
+  0xc4: "СЉ",
+  0xc5: "СЌ",
+  0xc6: "СЋ",
+  0xc7: "СЏ",
+  0xca: "С”",
+  0xcb: "Т‘",
+  0xcd: "СЃ",
+  0xce: "Т‘",
+  0xcf: "в‚¬",
+  0xe0: "Р”",
+  0xe1: "Р¦",
+  0xe2: "Р©",
+  0xe3: "РЇ",
+  0xe4: "С„",
+  0xe5: "С†",
+  0xe6: "С€",
+  0xea: "С”",
+  0xeb: "Р„",
+  0xec: "Рё",
+  0xed: "Рґ",
+  0xee: "Г—",
+  0xef: "Рѕ",
+  0xf0: "РЈ",
+  0xf1: "Р§",
+  0xf2: "Р§",
+  0xf3: "Р§",
+  0xf4: "Рќ",
+  0xf6: "Рґ",
+  0xfd: "Р±",
+  0xfe: "РЇ",
+  0xff: "в–€",
+});
+
+Object.assign(LCD_CHAR_MAP, {
+  0xa0: "\u0411",
+  0xa1: "\u0413",
+  0xa2: "\u0415",
+  0xa3: "\u0416",
+  0xa4: "\u0417",
+  0xa5: "\u0418",
+  0xa6: "\u0419",
+  0xa7: "\u041b",
+  0xa8: "\u041f",
+  0xa9: "\u0423",
+  0xaa: "\u0424",
+  0xab: "\u0427",
+  0xac: "\u0428",
+  0xad: "\u042c",
+  0xae: "\u042b",
+  0xaf: "\u042d",
+  0xb0: "\u042e",
+  0xb1: "\u042f",
+  0xb2: "\u0431",
+  0xb3: "\u0432",
+  0xb4: "\u0433",
+  0xb5: "\u0451",
+  0xb6: "\u0436",
+  0xb7: "\u0437",
+  0xb8: "\u0438",
+  0xb9: "\u0439",
+  0xba: "\u043a",
+  0xbb: "\u043b",
+  0xbc: "\u043c",
+  0xbd: "\u043d",
+  0xbe: "\u043f",
+  0xbf: "\u0442",
+  0xc0: "\u0447",
+  0xc1: "\u0448",
+  0xc2: "\u044c",
+  0xc3: "\u044b",
+  0xc4: "\u044a",
+  0xc5: "\u044d",
+  0xc6: "\u044e",
+  0xc7: "\u044f",
+  0xca: "\u0454",
+  0xcb: "\u0491",
+  0xcd: "\u0441",
+  0xce: "\u0491",
+  0xcf: "\u20ac",
+  0xe0: "\u0414",
+  0xe1: "\u0426",
+  0xe2: "\u0429",
+  0xe3: "\u042f",
+  0xe4: "\u0444",
+  0xe5: "\u0446",
+  0xe6: "\u0448",
+  0xea: "\u0454",
+  0xeb: "\u0404",
+  0xec: "\u0438",
+  0xed: "\u0434",
+  0xee: "\u00d7",
+  0xef: "\u043e",
+  0xf0: "\u0423",
+  0xf1: "\u0427",
+  0xf2: "\u0427",
+  0xf3: "\u0427",
+  0xf4: "\u041d",
+  0xf5: "\"",
+  0xf6: "\u0434",
+  0xfd: "\u0431",
+  0xfe: "\u042f",
+  0xff: "\u2588",
+});
+
+export class Lcd16x2 implements BusDevice {
+  private lines: string[] = Array.from({ length: LCD_ROWS }, () => spaces(LCD_COLS));
+  private cellCodes: number[][] = Array.from({ length: LCD_ROWS }, () =>
+    Array.from({ length: LCD_COLS }, () => 0x20),
+  );
+  private cursor = 0;
+  private pendingNibble: { rs: 0 | 1; raw: number } | null = null;
+  private busLog: string[] = [];
+
+  clear(): void {
+    this.lines = Array.from({ length: LCD_ROWS }, () => spaces(LCD_COLS));
+    this.cellCodes = Array.from({ length: LCD_ROWS }, () =>
+      Array.from({ length: LCD_COLS }, () => 0x20),
+    );
+    this.cursor = 0;
+    this.busLog = [];
+  }
+
+  print(row: 0 | 1, col: number, text: string): void {
+    const c = Math.max(0, Math.min(LCD_COLS - 1, col | 0));
+    const t = text.slice(0, LCD_COLS - c);
+    const line = this.lines[row];
+    this.lines[row] = (line.slice(0, c) + t + line.slice(c + t.length)).slice(
+      0,
+      LCD_COLS,
+    );
+  }
+
+  write(data: number): void {
+    const rs = (data & 0x01) as 0 | 1;
+
+    if (this.pendingNibble === null) {
+      this.pendingNibble = { rs, raw: data & 0xff };
+      this.pushBusLog(`0x08 <- ${hexByte(data)} pending RS=${rs}`);
+      return;
+    }
+
+    // Compatibility fallback:
+    // if RS flips between pulses, close previous pending nibble as full-byte,
+    // then start a new pending nibble for current RS.
+    if (this.pendingNibble.rs !== rs) {
+      this.pushBusLog(
+        `0x08 <- ${hexByte(this.pendingNibble.raw)} fallback full-byte RS=${this.pendingNibble.rs}`,
+      );
+      this.processByte(this.pendingNibble.raw & 0xff, this.pendingNibble.rs === 1);
+      this.pendingNibble = { rs, raw: data & 0xff };
+      this.pushBusLog(`0x08 <- ${hexByte(data)} pending RS=${rs}`);
+      return;
+    }
+
+    // ST841 lab compatibility: both pulses carry data nibble in bits 7..4.
+    const byte = (this.pendingNibble.raw & 0xf0) | ((data >> 4) & 0x0f);
+    const isData = this.pendingNibble.rs === 1;
+    this.pushBusLog(
+      `0x08 <- ${hexByte(this.pendingNibble.raw)} + ${hexByte(data)} = ${hexByte(byte)} RS=${this.pendingNibble.rs}`,
+    );
+    this.pendingNibble = null;
+    this.processByte(byte, isData);
+  }
+
+  writeDataByte(data: number): void {
+    this.pendingNibble = null;
+    this.pushBusLog(`0x09 <- ${hexByte(data)} data-byte`);
+    this.processByte(data & 0xff, true);
+  }
+
+  writeCommandByte(data: number): void {
+    this.pendingNibble = null;
+    this.pushBusLog(`cmd-byte ${hexByte(data)}`);
+    this.processByte(data & 0xff, false);
+  }
+
+  getDebugRows(): string[] {
+    const out: string[] = [];
+    for (let row = 0; row < LCD_ROWS; row++) {
+      const codes = this.cellCodes[row].map((v) => `0x${(v & 0xff).toString(16).padStart(2, "0").toUpperCase()}`);
+      const text = this.lines[row].replace(/\s/g, "В·");
+      out.push(`L${row + 1}: ${text}`);
+      out.push(`    ${codes.join(" ")}`);
+    }
+    out.push("LCD BUS LOG:");
+    out.push(...(this.busLog.length ? this.busLog.slice(-12) : ["    -"]));
+    return out;
+  }
+
+  private processByte(byte: number, isData: boolean): void {
+    if (isData) {
+      this.writeCharacter(byte & 0xff);
+      return;
+    }
+    this.executeCommand(byte & 0xff);
+  }
+
+  private executeCommand(command: number): void {
+    if (command === 0x01) {
+      this.clear();
+      return;
+    }
+
+    if (command === 0x02) {
+      this.cursor = 0;
+      return;
+    }
+
+    if ((command & 0x80) !== 0) {
+      this.cursor = command & 0x7f;
+    }
+  }
+
+  private writeCharacter(charCode: number): void {
+    const target = this.cursorToLineAndColumn(this.cursor);
+    if (!target) return;
+
+    const { row, col } = target;
+    const line = this.lines[row];
+    const ch = decodeLcdChar(charCode);
+    this.cellCodes[row][col] = charCode & 0xff;
+    this.lines[row] =
+      line.slice(0, col) + ch + line.slice(col + 1);
+    this.cursor += 1;
+  }
+
+  private pushBusLog(line: string): void {
+    this.busLog.push(line);
+    if (this.busLog.length > 80) {
+      this.busLog.splice(0, this.busLog.length - 80);
+    }
+  }
+
+  private cursorToLineAndColumn(
+    ddramAddress: number,
+  ): { row: number; col: number } | null {
+    const primary = findLineByBases(ddramAddress, LCD_LINE_BASES);
+    if (primary) return primary;
+    const alt = findLineByBases(ddramAddress, LCD_LINE_BASES_ALT);
+    if (alt) return alt;
+    return null;
+  }
+
+  render(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.64)";
+    ctx.strokeStyle = "rgba(255,255,255,0.2)";
+    ctx.fillRect(x, y, 268, 184);
+    ctx.strokeRect(x + 0.5, y + 0.5, 267, 183);
+
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillRect(x + 14, y + 24, 238, 130);
+    ctx.strokeStyle = "rgba(122,162,255,0.25)";
+    ctx.strokeRect(x + 14.5, y + 24.5, 237, 129);
+
+    const cellW = 238 / LCD_COLS;
+    const cellH = 130 / LCD_ROWS;
+    ctx.strokeStyle = "rgba(110,180,255,0.15)";
+    for (let row = 0; row <= LCD_ROWS; row++) {
+      const gy = y + 24 + row * cellH;
+      ctx.beginPath();
+      ctx.moveTo(x + 14, gy + 0.5);
+      ctx.lineTo(x + 252, gy + 0.5);
+      ctx.stroke();
+    }
+    for (let col = 0; col <= LCD_COLS; col++) {
+      const gx = x + 14 + col * cellW;
+      ctx.beginPath();
+      ctx.moveTo(gx + 0.5, y + 24);
+      ctx.lineTo(gx + 0.5, y + 154);
+      ctx.stroke();
+    }
+
+    if (LCD_SHOW_DOT_GRID) {
+      const dotCols = 5;
+      const dotRows = 8;
+      const dotGap = 1.1;
+      const innerPadX = 2.2;
+      const innerPadY = 2.4;
+
+      for (let row = 0; row < LCD_ROWS; row++) {
+        for (let col = 0; col < LCD_COLS; col++) {
+          const cellX = x + 14 + col * cellW;
+          const cellY = y + 24 + row * cellH;
+
+          ctx.fillStyle = "rgba(20,35,34,0.28)";
+          ctx.fillRect(cellX + 1.2, cellY + 1.2, cellW - 2.4, cellH - 2.4);
+
+          const availW = cellW - innerPadX * 2;
+          const availH = cellH - innerPadY * 2;
+          const dotW = (availW - (dotCols - 1) * dotGap) / dotCols;
+          const dotH = (availH - (dotRows - 1) * dotGap) / dotRows;
+
+          ctx.fillStyle = "rgba(80,150,120,0.12)";
+          for (let dr = 0; dr < dotRows; dr++) {
+            for (let dc = 0; dc < dotCols; dc++) {
+              const dx = cellX + innerPadX + dc * (dotW + dotGap);
+              const dy = cellY + innerPadY + dr * (dotH + dotGap);
+              ctx.fillRect(dx, dy, dotW, dotH);
+            }
+          }
+        }
+      }
+    }
+
+    // Active symbols on top
+    ctx.fillStyle = "rgba(165,255,205,1)";
+    ctx.shadowColor = "rgba(40,255,170,0.45)";
+    ctx.shadowBlur = 3;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "15px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    for (let row = 0; row < this.lines.length; row++) {
+      const line = this.lines[row];
+      for (let col = 0; col < LCD_COLS; col++) {
+        const ch = line[col] ?? " ";
+        const cx = x + 14 + col * cellW + cellW / 2;
+        const cy = y + 24 + row * cellH + cellH / 2 + 0.5;
+        ctx.fillText(ch, cx, cy);
+      }
+    }
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
+  }
+}
+
+function spaces(n: number): string {
+  return " ".repeat(n);
+}
+
+function decodeLcdChar(code: number): string {
+  const v = code & 0xff;
+  const mapped = LCD_CHAR_MAP[v];
+  if (mapped) return mapped;
+  if (v >= 0x20 && v <= 0x7e) return String.fromCharCode(v);
+  return ".";
+}
+
+function hexByte(value: number): string {
+  return `0x${(value & 0xff).toString(16).padStart(2, "0").toUpperCase()}`;
+}
+
+function findLineByBases(
+  ddramAddress: number,
+  bases: readonly number[],
+): { row: number; col: number } | null {
+  for (let row = 0; row < bases.length; row++) {
+    const base = bases[row];
+    const col = ddramAddress - base;
+    if (col >= 0 && col < LCD_COLS) {
+      return { row, col };
+    }
+  }
+  return null;
+}
+
+
+
+
+===== FILE: src/vm/devices/adcJoystick.ts =====
+
+export class AdcJoystick {
+  private x = 512;
+  private y = 512;
+
+  set(x: number, y: number): void {
+    this.x = clamp(x);
+    this.y = clamp(y);
+  }
+
+  read(): { x: number; y: number } {
+    return { x: this.x, y: this.y };
+  }
+}
+
+function clamp(v: number): number {
+  return Math.max(0, Math.min(1023, v | 0));
+}
+
+
+
+
+
+===== FILE: asm/lab5_stable_lcd.asm =====
+
+DAT EQU R0
+ADR EQU R1
+TMP EQU R2
+DL_OUTER EQU 20
+DL_INNER EQU 100
+WDL_COUNT EQU 5
+
+ORG 0000h
+MOV SP,#2Fh
+
+RUN:
+    CALL LCD_INIT
+
+MAIN_LOOP:
+    CALL COLUMN_1
+
+SCAN_1:
+    CJNE A,#00001110b,SCAN_4
+    ; key 1 -> no action
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_4:
+    CJNE A,#00001101b,SCAN_7
+    ; key 4 -> line2 + word3
+    CALL LINE2
+    CALL WORD3
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_7:
+    CJNE A,#00001011b,SCAN_ST
+    ; key 7 -> no action
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_ST:
+    CJNE A,#00000111b,SCAN_2COL
+    ; key * -> no action
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_2COL:
+    CALL COLUMN_2
+
+SCAN_2:
+    CJNE A,#00001110b,SCAN_5
+    ; key 2 -> clear/init LCD
+    CALL LCD_INIT
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_5:
+    CJNE A,#00001101b,SCAN_8
+    ; key 5 -> line3 + word2
+    CALL LINE3
+    CALL WORD2
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_8:
+    CJNE A,#00001011b,SCAN_0
+    ; key 8 -> no action
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_0:
+    CJNE A,#00000111b,SCAN_3COL
+    ; key 0 -> no action
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_3COL:
+    CALL COLUMN_3
+
+KEY_3:
+    CJNE A,#00001110b,SCAN_6
+    ; key 3 -> line1 + word1
+    CALL LINE1
+    CALL WORD1
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+
+SCAN_6:
+    CJNE A,#00001101b,SCAN_9
+    ; key 6 -> line4 + word4
+    CALL LINE4
+    CALL WORD4
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+
+SCAN_9:
+    CJNE A,#00001011b,SCAN_HASH
+    ; key 9 -> no action
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+
+SCAN_HASH:
+    CJNE A,#00000111b,SCAN_HASH_NO
+    ; key # -> line4 + word4
+    CALL LINE4
+    CALL WORD4
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+SCAN_HASH_NO:
+    JMP MAIN_LOOP
+
+LCD_INIT:
+    ; 0x01 clear
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#10h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+
+    ; 0x02 home
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#20h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+
+    ; 0x06 entry mode
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#60h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+
+    ; 0x0E display on/cursor on
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0E0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL WLDELAY
+    CALL LDELAY
+
+    ; line1 addr (0x80)
+    MOV DAT,#20h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#80h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD1:
+    ; "33"
+    MOV DAT,#033h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#033h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD2:
+    MOV DAT,#0A1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#071h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#091h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#071h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#011h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD3:
+    MOV DAT,#0A1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#081h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#051h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0F1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#071h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0F1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD4:
+    MOV DAT,#041h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#021h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#011h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#031h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#081h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0C1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#041h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0F1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#031h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#081h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0C1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE1:
+    MOV DAT,#080h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#000h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE2:
+    MOV DAT,#0C0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#000h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE3:
+    MOV DAT,#080h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0A0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE4:
+    MOV DAT,#0C0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0A0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+COLUMN_1:
+    CLR P3.6
+    MOV P2,#060h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+COLUMN_2:
+    CLR P3.6
+    MOV P2,#050h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+COLUMN_3:
+    CLR P3.6
+    MOV P2,#030h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+WAITREL_COL1:
+WR1:
+    CALL COLUMN_1
+    CJNE A,#00Fh,WR1
+    RET
+
+WAITREL_COL2:
+WR2:
+    CALL COLUMN_2
+    CJNE A,#00Fh,WR2
+    RET
+
+WAITREL_COL3:
+WR3:
+    CALL COLUMN_3
+    CJNE A,#00Fh,WR3
+    RET
+
+WRIT:
+WRITE:
+    SETB P3.6
+    MOV P0,DAT
+    MOV P2,ADR
+    NOP
+    MOV P2,#00h
+    RET
+
+LDELAY:
+    MOV R5,#DL_OUTER
+LD1:
+    MOV R6,#DL_INNER
+LD2:
+    DJNZ R6,LD2
+    DJNZ R5,LD1
+    RET
+
+WLDELAY:
+    MOV R7,#WDL_COUNT
+WL2:
+    ACALL LDELAY
+    DJNZ R7,WL2
+    RET
+
+END
+
+
+
+
+===== FILE: asm/lab5_key3_smoke.asm =====
+
+DAT EQU R0
+ADR EQU R1
+
+ORG 0000h
+MOV SP,#2Fh
+
+START:
+    ACALL LCD_INIT
+
+LOOP:
+    ACALL COLUMN_3
+    CJNE A,#00001110b,LOOP
+
+    ACALL LINE1
+    ACALL WORD1
+
+WAIT_RELEASE:
+    ACALL COLUMN_3
+    CJNE A,#00001110b,LOOP
+    JMP WAIT_RELEASE
+
+LCD_INIT:
+    ; 0x28
+    MOV DAT,#020h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    MOV DAT,#080h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+
+    ; 0x0E
+    MOV DAT,#000h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    MOV DAT,#0E0h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+
+    ; 0x01 clear
+    MOV DAT,#000h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    MOV DAT,#010h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL WLDELAY
+    RET
+
+LINE1:
+    ; cmd 0x80
+    MOV DAT,#080h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    MOV DAT,#000h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    RET
+
+WORD1:
+    ; '3' (0x33) x2
+    MOV DAT,#031h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    MOV DAT,#031h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+
+    MOV DAT,#031h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    MOV DAT,#031h
+    MOV ADR,#08h
+    ACALL WRIT
+    ACALL LDELAY
+    RET
+
+COLUMN_3:
+    CLR P3.6
+    MOV P2,#030h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+WRIT:
+    SETB P3.6
+    MOV P0,DAT
+    MOV P2,ADR
+    NOP
+    MOV P2,#00h
+    RET
+
+LDELAY:
+    MOV R5,#020
+D1:
+    MOV R6,#100
+D2:
+    DJNZ R6,D2
+    DJNZ R5,D1
+    RET
+
+WLDELAY:
+    MOV R7,#005
+WD1:
+    ACALL LDELAY
+    DJNZ R7,WD1
+    RET
+
+END
+
+
+
