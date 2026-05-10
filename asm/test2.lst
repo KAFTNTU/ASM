@@ -1,0 +1,6 @@
+                                      1 .module test2
+                                      2 .area CSEG (CODE)
+      000000                          3 run:
+      000000 75 B0 FF         [24]    4   mov p3,#0xff
+      000003 74 12            [12]    5   mov a,#0x12
+      000005 80 F9            [24]    6   sjmp run

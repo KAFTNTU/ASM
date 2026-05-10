@@ -1,0 +1,10 @@
+-muwx
+-i asm\test3.ihx
+-M
+-I 0x0100
+-b HOME = 0x0000
+-b ISEG = 0x0000
+-b BSEG = 0x0000
+asm\test3.rel
+
+-e

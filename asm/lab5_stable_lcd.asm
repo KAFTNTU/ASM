@@ -1,0 +1,450 @@
+DAT EQU R0
+ADR EQU R1
+TMP EQU R2
+DL_OUTER EQU 20
+DL_INNER EQU 100
+WDL_COUNT EQU 5
+
+ORG 0000h
+MOV SP,#2Fh
+
+RUN:
+    CALL LCD_INIT
+
+MAIN_LOOP:
+    CALL COLUMN_1
+
+SCAN_1:
+    CJNE A,#00001110b,SCAN_4
+    ; key 1 -> no action
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_4:
+    CJNE A,#00001101b,SCAN_7
+    ; key 4 -> line2 + word3
+    CALL LINE2
+    CALL WORD3
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_7:
+    CJNE A,#00001011b,SCAN_ST
+    ; key 7 -> no action
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_ST:
+    CJNE A,#00000111b,SCAN_2COL
+    ; key * -> no action
+    CALL WAITREL_COL1
+    JMP MAIN_LOOP
+
+SCAN_2COL:
+    CALL COLUMN_2
+
+SCAN_2:
+    CJNE A,#00001110b,SCAN_5
+    ; key 2 -> clear/init LCD
+    CALL LCD_INIT
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_5:
+    CJNE A,#00001101b,SCAN_8
+    ; key 5 -> line3 + word2
+    CALL LINE3
+    CALL WORD2
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_8:
+    CJNE A,#00001011b,SCAN_0
+    ; key 8 -> no action
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_0:
+    CJNE A,#00000111b,SCAN_3COL
+    ; key 0 -> no action
+    CALL WAITREL_COL2
+    JMP MAIN_LOOP
+
+SCAN_3COL:
+    CALL COLUMN_3
+
+KEY_3:
+    CJNE A,#00001110b,SCAN_6
+    ; key 3 -> line1 + word1
+    CALL LINE1
+    CALL WORD1
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+
+SCAN_6:
+    CJNE A,#00001101b,SCAN_9
+    ; key 6 -> line4 + word4
+    CALL LINE4
+    CALL WORD4
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+
+SCAN_9:
+    CJNE A,#00001011b,SCAN_HASH
+    ; key 9 -> no action
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+
+SCAN_HASH:
+    CJNE A,#00000111b,SCAN_HASH_NO
+    ; key # -> line4 + word4
+    CALL LINE4
+    CALL WORD4
+    CALL WAITREL_COL3
+    JMP MAIN_LOOP
+SCAN_HASH_NO:
+    JMP MAIN_LOOP
+
+LCD_INIT:
+    ; 0x01 clear
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#10h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+
+    ; 0x02 home
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#20h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+
+    ; 0x06 entry mode
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#60h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+
+    ; 0x0E display on/cursor on
+    MOV DAT,#00h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0E0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL WLDELAY
+    CALL LDELAY
+
+    ; line1 addr (0x80)
+    MOV DAT,#20h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#80h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD1:
+    ; "33"
+    MOV DAT,#033h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#033h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD2:
+    MOV DAT,#0A1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#071h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#091h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#071h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#011h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD3:
+    MOV DAT,#0A1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#081h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#051h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0F1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#071h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0F1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+WORD4:
+    MOV DAT,#041h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#021h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#011h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#031h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#081h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0C1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#041h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#061h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0F1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#031h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0B1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#081h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0C1h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#001h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE1:
+    MOV DAT,#080h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#000h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE2:
+    MOV DAT,#0C0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#000h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE3:
+    MOV DAT,#080h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0A0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+LINE4:
+    MOV DAT,#0C0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    MOV DAT,#0A0h
+    MOV ADR,#08h
+    CALL WRIT
+    CALL LDELAY
+    RET
+
+COLUMN_1:
+    CLR P3.6
+    MOV P2,#060h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+COLUMN_2:
+    CLR P3.6
+    MOV P2,#050h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+COLUMN_3:
+    CLR P3.6
+    MOV P2,#030h
+    MOV A,P0
+    ANL A,#00Fh
+    RET
+
+WAITREL_COL1:
+WR1:
+    CALL COLUMN_1
+    CJNE A,#00Fh,WR1
+    RET
+
+WAITREL_COL2:
+WR2:
+    CALL COLUMN_2
+    CJNE A,#00Fh,WR2
+    RET
+
+WAITREL_COL3:
+WR3:
+    CALL COLUMN_3
+    CJNE A,#00Fh,WR3
+    RET
+
+WRIT:
+WRITE:
+    SETB P3.6
+    MOV P0,DAT
+    MOV P2,ADR
+    NOP
+    MOV P2,#00h
+    RET
+
+LDELAY:
+    MOV R5,#DL_OUTER
+LD1:
+    MOV R6,#DL_INNER
+LD2:
+    DJNZ R6,LD2
+    DJNZ R5,LD1
+    RET
+
+WLDELAY:
+    MOV R7,#WDL_COUNT
+WL2:
+    ACALL LDELAY
+    DJNZ R7,WL2
+    RET
+
+END

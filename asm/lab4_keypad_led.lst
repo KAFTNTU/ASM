@@ -1,0 +1,136 @@
+                                      1 .module lab4_keypad_led
+                                      2 .area HOME (CODE)
+                                      3 
+      000000                          4 run:
+      000000 75 B0 FF         [24]    5   mov p3, #0xff
+      000003r00rAA            [12]    6   acall clear_leds
+                                      7 
+      000005                          8 loop:
+      000005r00r7D            [12]    9   acall column_1
+      000007 B4 0E 06         [24]   10   cjne a, #0x0e, key_4
+      00000A 78 FE            [12]   11   mov r0, #0xfe
+      00000Cr00r9B            [12]   12   acall show_leds
+      00000E 80 F5            [24]   13   sjmp loop
+                                     14 
+      000010                         15 key_4:
+      000010 B4 0D 06         [24]   16   cjne a, #0x0d, key_7
+      000013 78 FB            [12]   17   mov r0, #0xfb
+      000015r00r9B            [12]   18   acall show_leds
+      000017 80 EC            [24]   19   sjmp loop
+                                     20 
+      000019                         21 key_7:
+      000019 B4 0B 06         [24]   22   cjne a, #0x0b, key_star
+      00001C 78 F8            [12]   23   mov r0, #0xf8
+      00001Er00r9B            [12]   24   acall show_leds
+      000020 80 E3            [24]   25   sjmp loop
+                                     26 
+      000022                         27 key_star:
+      000022 B4 07 06         [24]   28   cjne a, #0x07, scan_col2
+      000025 78 55            [12]   29   mov r0, #0x55
+      000027r00r9B            [12]   30   acall show_leds
+      000029 80 DA            [24]   31   sjmp loop
+                                     32 
+      00002B                         33 scan_col2:
+      00002Br00r87            [12]   34   acall column_2
+      00002D B4 0E 06         [24]   35   cjne a, #0x0e, key_5
+      000030 78 FD            [12]   36   mov r0, #0xfd
+      000032r00r9B            [12]   37   acall show_leds
+      000034 80 CF            [24]   38   sjmp loop
+                                     39 
+      000036                         40 key_5:
+      000036 B4 0D 06         [24]   41   cjne a, #0x0d, key_8
+      000039 78 FA            [12]   42   mov r0, #0xfa
+      00003Br00r9B            [12]   43   acall show_leds
+      00003D 80 C6            [24]   44   sjmp loop
+                                     45 
+      00003F                         46 key_8:
+      00003F B4 0B 06         [24]   47   cjne a, #0x0b, key_0
+      000042 78 F7            [12]   48   mov r0, #0xf7
+      000044r00r9B            [12]   49   acall show_leds
+      000046 80 BD            [24]   50   sjmp loop
+                                     51 
+      000048                         52 key_0:
+      000048 B4 07 06         [24]   53   cjne a, #0x07, scan_col3
+      00004B 78 00            [12]   54   mov r0, #0x00
+      00004Dr00r9B            [12]   55   acall show_leds
+      00004F 80 B4            [24]   56   sjmp loop
+                                     57 
+      000051                         58 scan_col3:
+      000051r00r91            [12]   59   acall column_3
+      000053 B4 0E 06         [24]   60   cjne a, #0x0e, key_6
+      000056 78 FC            [12]   61   mov r0, #0xfc
+      000058r00r9B            [12]   62   acall show_leds
+      00005A 80 A9            [24]   63   sjmp loop
+                                     64 
+      00005C                         65 key_6:
+      00005C B4 0D 06         [24]   66   cjne a, #0x0d, key_9
+      00005F 78 F9            [12]   67   mov r0, #0xf9
+      000061r00r9B            [12]   68   acall show_leds
+      000063 80 A0            [24]   69   sjmp loop
+                                     70 
+      000065                         71 key_9:
+      000065 B4 0B 06         [24]   72   cjne a, #0x0b, key_hash
+      000068 78 F6            [12]   73   mov r0, #0xf6
+      00006Ar00r9B            [12]   74   acall show_leds
+      00006C 80 97            [24]   75   sjmp loop
+                                     76 
+      00006E                         77 key_hash:
+      00006E B4 07 06         [24]   78   cjne a, #0x07, no_key
+      000071 78 AA            [12]   79   mov r0, #0xaa
+      000073r00r9B            [12]   80   acall show_leds
+      000075 80 8E            [24]   81   sjmp loop
+                                     82 
+      000077                         83 no_key:
+      000077r00rAA            [12]   84   acall clear_leds
+      000079r00rB8            [12]   85   acall ldelay
+      00007B 80 88            [24]   86   sjmp loop
+                                     87 
+      00007D                         88 column_1:
+      00007D C2 B6            [12]   89   clr p3.6
+      00007F 75 A0 60         [24]   90   mov p2, #0x60
+      000082 E5 80            [12]   91   mov a, p0
+      000084 54 0F            [12]   92   anl a, #0x0f
+      000086 22               [24]   93   ret
+                                     94 
+      000087                         95 column_2:
+      000087 C2 B6            [12]   96   clr p3.6
+      000089 75 A0 50         [24]   97   mov p2, #0x50
+      00008C E5 80            [12]   98   mov a, p0
+      00008E 54 0F            [12]   99   anl a, #0x0f
+      000090 22               [24]  100   ret
+                                    101 
+      000091                        102 column_3:
+      000091 C2 B6            [12]  103   clr p3.6
+      000093 75 A0 30         [24]  104   mov p2, #0x30
+      000096 E5 80            [12]  105   mov a, p0
+      000098 54 0F            [12]  106   anl a, #0x0f
+      00009A 22               [24]  107   ret
+                                    108 
+      00009B                        109 show_leds:
+      00009B D2 B6            [12]  110   setb p3.6
+      00009D 88 80            [24]  111   mov p0, r0
+      00009F 75 A0 07         [24]  112   mov p2, #0x07
+      0000A2 00               [12]  113   nop
+      0000A3 00               [12]  114   nop
+      0000A4 75 A0 00         [24]  115   mov p2, #0x00
+      0000A7r00rB8            [12]  116   acall ldelay
+      0000A9 22               [24]  117   ret
+                                    118 
+      0000AA                        119 clear_leds:
+      0000AA 78 FF            [12]  120   mov r0, #0xff
+      0000ACr00r9B            [12]  121   acall show_leds
+      0000AE 22               [24]  122   ret
+                                    123 
+      0000AF                        124 delay:
+      0000AF 7A 80            [12]  125   mov r2, #0x80
+      0000B1                        126 delay_outer:
+      0000B1 7B FF            [12]  127   mov r3, #0xff
+      0000B3                        128 delay_inner:
+      0000B3 DB FE            [24]  129   djnz r3, delay_inner
+      0000B5 DA FA            [24]  130   djnz r2, delay_outer
+      0000B7 22               [24]  131   ret
+                                    132 
+      0000B8                        133 ldelay:
+      0000B8r00rAF            [12]  134   acall delay
+      0000BAr00rAF            [12]  135   acall delay
+      0000BC 22               [24]  136   ret
