@@ -1,0 +1,45 @@
+export const ST841_MAP = {
+  ledBarAddr: 0x07,
+  sevenSegAddrs: [0x01, 0x02, 0x03, 0x04] as const,
+  matrixRowsAddr: 0x05,
+  matrixColsAddr: 0x06,
+  lcdAddr: 0x08,
+  keypadColumnAddrs: [0xef, 0xdf, 0xbf] as const,
+  keypadColumnAddrsFromExample: [0x60, 0x50, 0x30] as const,
+  stepperMotorAddr: 0x09,
+  adc: {
+    adcon1: 0xef,
+    adcon2: 0xd8,
+    dataLow: 0xd9,
+    dataHigh: 0xda,
+    adciMask: 0x80,
+    sconvMask: 0x10,
+    // Working assumption for the current simulator:
+    // ADC6 -> joystick X, ADC7 -> joystick Y.
+    xChannel: 0x06,
+    yChannel: 0x07,
+  },
+} as const;
+
+export const SFR = {
+  p0: 0x80,
+  sp: 0x81,
+  dpl: 0x82,
+  dph: 0x83,
+  p1: 0x90,
+  p2: 0xa0,
+  ie: 0xa8,
+  p3: 0xb0,
+  ip: 0xb8,
+  tcon: 0x88,
+  tmod: 0x89,
+  tl0: 0x8a,
+  tl1: 0x8b,
+  th0: 0x8c,
+  th1: 0x8d,
+  scon: 0x98,
+  sbuf: 0x99,
+  psw: 0xd0,
+  acc: 0xe0,
+  b: 0xf0,
+} as const;
