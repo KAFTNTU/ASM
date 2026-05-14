@@ -8,6 +8,14 @@ const BUILTIN_RETURN_CALLS = new Set([
     "joystick_x", "joy_x", "joystick_y", "joy_y",
     "keypad_read", "key_read", "keypad_col1", "keypad_col2", "keypad_col3",
 ]);
+const BUILTIN_VOID_CALLS = new Set([
+    "write", "st_write", "bus_write", "delay", "sleep", "delay_ms", "nop", "_nop_",
+    "led", "leds", "led_line", "led_bar", "led_off", "leds_off", "led_all", "leds_all", "led_on",
+    "seg", "sevenseg", "seven_seg", "seg_digit", "sevenseg_digit", "digit", "seg_clear", "sevenseg_clear",
+    "matrix", "matrix_write", "matrix_rows", "matrix_cols",
+    "lcd_cmd", "lcd_command", "lcd_data", "lcd_char", "lcd_putc", "lcd_clear", "lcd_home",
+    "lcd_init", "lcd_line", "lcd_puts", "lcd_print"
+]);
 // ST841 / 74HC574 seven-segment table from the lab manual.
 // Bit order: PGFEDCBA, active-low: 0 lights a segment, 1 turns it off.
 const DIGIT_TO_SEG = [
@@ -47,6 +55,7 @@ export function transpileCToAsm(source) {
         needLcd: false,
         needLedOn: false,
         needSegDigit: false,
+        arrays: parseCodeArrays(text),
     };
     if (!ctx.functions.has("main")) {
         diagnostics.push({ level: "error", message: "C: не знайдено main(). Потрібно `void main(){...}` або `int main(){...}`." });
@@ -62,7 +71,7 @@ export function transpileCToAsm(source) {
     emitted.push("");
     emitFunction("main", ctx, emitted, new Set());
     for (const name of ctx.functions.keys()) {
-        if (name !== "main")
+        if (name !== "main" && !BUILTIN_VOID_CALLS.has(name) && !BUILTIN_RETURN_CALLS.has(name))
             emitFunction(name, ctx, emitted, new Set());
     }
     if (ctx.needWrite || ctx.needLcd || ctx.needLedOn || ctx.needSegDigit)
@@ -79,6 +88,8 @@ export function transpileCToAsm(source) {
         emitLedOnRoutine(emitted);
     if (ctx.needSegDigit)
         emitSegDigitRoutine(emitted);
+    if (ctx.arrayRoutines)
+        emitArrayRoutines(emitted, ctx.arrayRoutines);
     if (ctx.needDelay)
         emitDelayRoutine(emitted);
     emitted.push("end");
@@ -176,9 +187,14 @@ function emitStatement(statement, lineOffset, ctx, out) {
             const m = /^([A-Za-z_]\w*)(?:\s*=\s*(.+))?$/.exec(part.trim());
             if (!m)
                 continue;
-            const variable = allocVar(m[1], ctx);
-            if (m[2] != null)
-                emitAssignToAddr(variable.addr, m[2], line, ctx, out);
+            const declType = declaration[0].toLowerCase();
+            const variable = allocVar(m[1], ctx, /int/.test(declType) ? 2 : 1);
+            if (m[2] != null) {
+                if (variable.size === 2)
+                    emitAssignToVar16(variable, m[2], line, ctx, out);
+                else
+                    emitAssignToAddr(variable.addr, m[2], line, ctx, out);
+            }
         }
         return;
     }
@@ -323,10 +339,66 @@ function emitCall(nameRaw, argsRaw, line, ctx, out) {
         return;
     }
     if (ctx.functions.has(name)) {
-        out.push(`call ${sanitizeLabel(name)}`);
+        emitUserFunctionCall(name, args, line, ctx, out);
         return;
     }
     ctx.diagnostics.push({ level: "warning", line, message: `C function not known: ${nameRaw}()` });
+}
+function emitUserFunctionCall(name, args, line, ctx, out) {
+    const fn = ctx.functions.get(name);
+    if (!fn) {
+        out.push(`call ${sanitizeLabel(name)}`);
+        return;
+    }
+    const params = fn.params ?? [];
+    for (let i = 0; i < params.length; i++) {
+        const param = params[i];
+        const info = allocVar(param.name, ctx, param.size);
+        const arg = args[i] ?? "0";
+        if (param.size === 2) {
+            emitAssignToVar16(info, arg, line, ctx, out);
+        }
+        else {
+            emitLoadA(arg, line, ctx, out);
+            out.push(`mov ${hexByte(info.addr)},a`);
+        }
+    }
+    out.push(`call ${sanitizeLabel(name)}`);
+}
+function emitAssignToVar16(info, expr, line, ctx, out) {
+    const value = parseWideValue(expr, ctx);
+    if (value != null) {
+        out.push(`mov ${hexByte(info.addr)},#${hexByte(value & 0xff)}`);
+        out.push(`mov ${hexByte(info.addr + 1)},#${hexByte((value >> 8) & 0xff)}`);
+        return;
+    }
+    const src = ctx.vars.get(expr.trim().toLowerCase());
+    if (src && src.size === 2) {
+        out.push(`mov a,${hexByte(src.addr)}`);
+        out.push(`mov ${hexByte(info.addr)},a`);
+        out.push(`mov a,${hexByte(src.addr + 1)}`);
+        out.push(`mov ${hexByte(info.addr + 1)},a`);
+        return;
+    }
+    emitLoadA(expr, line, ctx, out);
+    out.push(`mov ${hexByte(info.addr)},a`);
+    out.push(`mov ${hexByte(info.addr + 1)},#0x00`);
+}
+function parseWideValue(raw, ctx) {
+    const text = raw.trim().replace(/;$/, "");
+    const constVal = ctx.constants?.get(text.toLowerCase());
+    if (constVal)
+        return parseWideValue(constVal, ctx);
+    const num = normalizeNumber(text);
+    if (!num)
+        return null;
+    if (/^0x/i.test(num))
+        return Number.parseInt(num.slice(2), 16) & 0xffff;
+    if (/^[01]+b$/i.test(num))
+        return Number.parseInt(num.slice(0, -1), 2) & 0xffff;
+    if (/^0b/i.test(num))
+        return Number.parseInt(num.slice(2), 2) & 0xffff;
+    return Number.parseInt(num, 10) & 0xffff;
 }
 function emitBusWrite(args, line, ctx, out) {
     if (args.length < 2) {
@@ -346,6 +418,8 @@ function emitSevenSegRaw(args, line, ctx, out) {
         ctx.diagnostics.push({ level: "warning", line, message: "sevenseg(pos,value): pos має бути 1..4." });
         return;
     }
+    // User-facing logical order: pos 1 is the leftmost digit, pos 4 is the rightmost.
+    // Hardware/ST841 bus order remains unchanged: addr 1 is rightmost, addr 4 is leftmost.
     emitBusWrite([hexByte(5 - pos), args[1] ?? "0xff"], line, ctx, out);
 }
 function emitSevenSegDigit(args, line, ctx, out) {
@@ -357,6 +431,8 @@ function emitSevenSegDigit(args, line, ctx, out) {
     emitLoadA(args[1] ?? "0", line, ctx, out);
     out.push("call seg_digit_to_pattern");
     out.push("mov r7,a");
+    // User-facing logical order: pos 1 is leftmost, pos 4 is rightmost.
+    // Raw methodical writes P2=1..4 are not changed.
     out.push(`mov r6,#${hexByte(5 - pos)}`);
     out.push("call write");
     ctx.needSegDigit = true;
@@ -444,11 +520,13 @@ function emitCompoundAssign(left, op, right, line, ctx, out) {
     out.push(`mov a,${target}`);
     const imm = parseValue(right, ctx);
     const rightTarget = resolveTarget(right, ctx);
-    if (imm == null && !rightTarget) {
-        ctx.diagnostics.push({ level: "warning", line, message: `C compound assignment unsupported RHS: ${right}` });
-        return;
+    let operand = imm != null ? `#${hexByte(imm)}` : rightTarget;
+    if (!operand) {
+        emitLoadA(right, line, ctx, out);
+        out.push("mov r0,a");
+        out.push(`mov a,${target}`);
+        operand = "r0";
     }
-    const operand = imm != null ? `#${hexByte(imm)}` : rightTarget;
     if (op === "+")
         out.push(`add a,${operand}`);
     else if (op === "-") {
@@ -463,8 +541,75 @@ function emitCompoundAssign(left, op, right, line, ctx, out) {
         out.push(`xrl a,${operand}`);
     out.push(`mov ${target},a`);
 }
+function emitLoadArrayLookup(arrayName, indexExpr, line, ctx, out) {
+    emitLoadIndexA(indexExpr, line, ctx, out);
+    const values = ctx.arrays.get(arrayName) ?? [];
+    const routine = `lookup_${sanitizeLabel(arrayName)}`;
+    out.push(`call ${routine}`);
+    ctx[`need_array_${arrayName}`] = true;
+    ctx.arrayRoutines = ctx.arrayRoutines ?? new Map();
+    ctx.arrayRoutines.set(routine, values);
+}
+function emitLoadIndexA(exprRaw, line, ctx, out) {
+    const expr = exprRaw.trim().replace(/\s+/g, "");
+    const nib = /^\(?([A-Za-z_]\w*)>>(\d+)\)?&(?:0x0[fF]|15)$/.exec(expr);
+    if (nib) {
+        const v = ctx.vars.get(nib[1].toLowerCase());
+        const shift = Number(nib[2]);
+        if (v && v.size === 2) {
+            if (shift < 8)
+                out.push(`mov a,${hexByte(v.addr)}`);
+            else
+                out.push(`mov a,${hexByte(v.addr + 1)}`);
+            if (shift % 8 === 4)
+                out.push("swap a");
+            out.push("anl a,#0x0f");
+            return;
+        }
+    }
+    const lowNib = /^\(?([A-Za-z_]\w*)\)?&(?:0x0[fF]|15)$/.exec(expr);
+    if (lowNib) {
+        const v = ctx.vars.get(lowNib[1].toLowerCase());
+        if (v) {
+            out.push(`mov a,${hexByte(v.addr)}`);
+            out.push("anl a,#0x0f");
+            return;
+        }
+        const target = resolveTarget(lowNib[1], ctx);
+        if (target) {
+            out.push(`mov a,${target}`);
+            out.push("anl a,#0x0f");
+            return;
+        }
+    }
+    const simpleShift = /^\(?([A-Za-z_]\w*)>>(\d+)\)?$/.exec(expr);
+    if (simpleShift) {
+        const v = ctx.vars.get(simpleShift[1].toLowerCase());
+        const shift = Number(simpleShift[2]);
+        if (v && v.size === 2) {
+            if (shift < 8)
+                out.push(`mov a,${hexByte(v.addr)}`);
+            else
+                out.push(`mov a,${hexByte(v.addr + 1)}`);
+            if (shift % 8 === 4)
+                out.push("swap a");
+            return;
+        }
+    }
+    const value = parseValue(exprRaw, ctx);
+    if (value != null) {
+        out.push(`mov a,#${hexByte(value)}`);
+        return;
+    }
+    emitLoadA(exprRaw, line, ctx, out);
+}
 function emitLoadA(exprRaw, line, ctx, out) {
     const expr = exprRaw.trim().replace(/;$/, "");
+    const arrayLookup = /^([A-Za-z_]\w*)\s*\[([\s\S]+)\]$/.exec(expr);
+    if (arrayLookup && ctx.arrays?.has(arrayLookup[1].toLowerCase())) {
+        emitLoadArrayLookup(arrayLookup[1].toLowerCase(), arrayLookup[2], line, ctx, out);
+        return;
+    }
     const constVal = parseValue(expr, ctx);
     if (constVal != null) {
         out.push(`mov a,#${hexByte(constVal)}`);
@@ -623,13 +768,15 @@ function resolveTarget(nameRaw, ctx) {
         return hexByte(num);
     return null;
 }
-function allocVar(nameRaw, ctx) {
+function allocVar(nameRaw, ctx, size = 1) {
     const name = nameRaw.toLowerCase();
     const existing = ctx.vars.get(name);
     if (existing)
         return existing;
-    const addr = 0x20 + ctx.vars.size;
-    const info = { name, addr };
+    let addr = 0x20;
+    for (const item of ctx.vars.values())
+        addr += item.size ?? 1;
+    const info = { name, addr, size };
     ctx.vars.set(name, info);
     return info;
 }
@@ -726,6 +873,21 @@ function emitSegDigitRoutine(out) {
     out.push("ret");
     out.push("");
 }
+function emitArrayRoutines(out, routines) {
+    for (const [routine, values] of routines.entries()) {
+        out.push(`${routine}:`);
+        for (let i = 0; i < values.length; i++) {
+            const next = `${routine}_${i + 1}`;
+            out.push(`cjne a,#${hexByte(i)},${next}`);
+            out.push(`mov a,#${hexByte(values[i])}`);
+            out.push("ret");
+            out.push(`${next}:`);
+        }
+        out.push("mov a,#0xff");
+        out.push("ret");
+        out.push("");
+    }
+}
 function emitDelayRoutine(out) {
     out.push("delay:");
     out.push("mov r3,#20");
@@ -754,10 +916,11 @@ function emitLiteralLcdData(value, ctx, out) {
 }
 function parseFunctions(source) {
     const map = new Map();
-    const re = /\b(?:void|int|unsigned\s+char|unsigned\s+int|uint8_t|char)\s+([A-Za-z_]\w*)\s*\([^)]*\)\s*\{/gi;
+    const re = /\b(?:void|int|unsigned\s+char|unsigned\s+int|uint8_t|char|signed\s+char|signed\s+int|bit)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)\s*\{/gi;
     let m;
     while ((m = re.exec(source))) {
         const name = m[1].toLowerCase();
+        const params = parseFunctionParams(m[2]);
         const start = re.lastIndex;
         let depth = 1;
         let index = start;
@@ -772,9 +935,41 @@ function parseFunctions(source) {
         if (depth === 0) {
             const body = source.slice(start, index - 1);
             const lineOffset = source.slice(0, start).split("\n").length - 1;
-            map.set(name, { name, body, lineOffset });
+            map.set(name, { name, body, lineOffset, params });
             re.lastIndex = index;
         }
+    }
+    return map;
+}
+function parseFunctionParams(paramText) {
+    const text = paramText.trim();
+    if (!text || /^void$/i.test(text))
+        return [];
+    const params = [];
+    for (const partRaw of splitCommaSafe(text)) {
+        const part = partRaw.trim().replace(/\bdata\b|\bidata\b|\bxdata\b|\bcode\b|\bbdata\b|\bpdata\b|\bfar\b/gi, "").trim();
+        const m = /^(?:(unsigned|signed)\s+)?(char|int|long|bit|uint8_t)\s+([A-Za-z_]\w*)$/i.exec(part);
+        if (!m)
+            continue;
+        const base = m[2].toLowerCase();
+        const name = m[3].toLowerCase();
+        const size = base === "int" || base === "long" ? 2 : 1;
+        params.push({ name, size });
+    }
+    return params;
+}
+function parseCodeArrays(source) {
+    const map = new Map();
+    const re = /\bconst\s+(?:unsigned\s+char|char|uint8_t)\s+code\s+([A-Za-z_]\w*)\s*\[\s*(?:\d+)?\s*\]\s*=\s*\{([\s\S]*?)\}\s*;/gi;
+    let m;
+    while ((m = re.exec(source))) {
+        const values = [];
+        for (const raw of splitCommaSafe(m[2])) {
+            const value = parseValue(raw, { constants: new Map(), arrays: new Map(), sfr: new Map(), sbit: new Map(), vars: new Map(), diagnostics: [] });
+            if (value != null)
+                values.push(value & 0xff);
+        }
+        map.set(m[1].toLowerCase(), values);
     }
     return map;
 }
@@ -818,6 +1013,9 @@ function parseSbits(source) {
         if (value && !map.has(m[1].toLowerCase()))
             map.set(m[1].toLowerCase(), value);
     }
+    map.set("wr", "p3.6");
+    map.set("int0", "p3.2");
+    map.set("int1", "p3.3");
     map.set("adci", "0xdf");
     map.set("sconv", "0xdc");
     return map;
@@ -892,7 +1090,7 @@ function splitCommaSafe(source) {
 }
 function parseValue(raw, ctx) {
     const text = raw.trim().replace(/^\((.*)\)$/, "$1").replace(/;$/, "");
-    const constVal = ctx.constants.get(text.toLowerCase());
+    const constVal = ctx.constants?.get(text.toLowerCase());
     if (constVal)
         return parseValue(constVal, ctx);
     const charMatch = /^'(?:\\(.)|([^\\]))'$/.exec(text);
@@ -916,13 +1114,15 @@ function parseConstantExpression(text, ctx) {
     if (!/[+\-*/&|^~<>]/.test(text))
         return null;
     let expr = text;
-    for (const [name, value] of ctx.constants) {
+    for (const [name, value] of (ctx.constants ?? new Map())) {
         expr = expr.replace(new RegExp(`\\b${escapeRegExp(name)}\\b`, "gi"), value);
     }
     if (!/^[\dxa-fA-FbBoO\s()+\-*/&|^~<>]+$/.test(expr))
         return null;
     expr = expr.replace(/\b([01]+)b\b/gi, (_m, bits) => `0b${bits}`);
     try {
+        // Constant-only evaluator used only after a strict character whitelist above.
+        // eslint-disable-next-line no-new-func
         const value = Function(`"use strict"; return (${expr});`)();
         return Number.isFinite(value) ? Number(value) & 0xff : null;
     }
