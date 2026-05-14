@@ -8,23 +8,25 @@ const BUILTIN_RETURN_CALLS = new Set([
     "joystick_x", "joy_x", "joystick_y", "joy_y",
     "keypad_read", "key_read", "keypad_col1", "keypad_col2", "keypad_col3",
 ]);
+// ST841 / 74HC574 seven-segment table from the lab manual.
+// Bit order: PGFEDCBA, active-low: 0 lights a segment, 1 turns it off.
 const DIGIT_TO_SEG = [
-    0b00111111, // 0
-    0b00000110, // 1
-    0b01011011, // 2
-    0b01001111, // 3
-    0b01100110, // 4
-    0b01101101, // 5
-    0b01111101, // 6
-    0b00000111, // 7
-    0b01111111, // 8
-    0b01101111, // 9
-    0b01110111, // A
-    0b01111100, // b
-    0b00111001, // C
-    0b01011110, // d
-    0b01111001, // E
-    0b01110001, // F
+    0xC0, // 0
+    0xF9, // 1
+    0xA4, // 2
+    0xB0, // 3
+    0x99, // 4
+    0x92, // 5
+    0x82, // 6
+    0xF8, // 7
+    0x80, // 8
+    0x98, // 9
+    0x88, // A
+    0x83, // b
+    0xC6, // C
+    0xA1, // d
+    0x86, // E
+    0x8E, // F
 ];
 export function transpileCToAsm(source) {
     const diagnostics = [];
@@ -257,7 +259,7 @@ function emitCall(nameRaw, argsRaw, line, ctx, out) {
     }
     if (name === "seg_clear" || name === "sevenseg_clear") {
         for (let a = 1; a <= 4; a++)
-            emitBusWrite([hexByte(a), "0x00"], line, ctx, out);
+            emitBusWrite([hexByte(a), "0xff"], line, ctx, out);
         return;
     }
     if (name === "matrix" || name === "matrix_write") {
@@ -344,7 +346,7 @@ function emitSevenSegRaw(args, line, ctx, out) {
         ctx.diagnostics.push({ level: "warning", line, message: "sevenseg(pos,value): pos має бути 1..4." });
         return;
     }
-    emitBusWrite([hexByte(pos), args[1] ?? "0"], line, ctx, out);
+    emitBusWrite([hexByte(5 - pos), args[1] ?? "0xff"], line, ctx, out);
 }
 function emitSevenSegDigit(args, line, ctx, out) {
     const pos = parseValue(args[0] ?? "1", ctx);
@@ -355,7 +357,7 @@ function emitSevenSegDigit(args, line, ctx, out) {
     emitLoadA(args[1] ?? "0", line, ctx, out);
     out.push("call seg_digit_to_pattern");
     out.push("mov r7,a");
-    out.push(`mov r6,#${hexByte(pos)}`);
+    out.push(`mov r6,#${hexByte(5 - pos)}`);
     out.push("call write");
     ctx.needSegDigit = true;
 }
@@ -921,8 +923,6 @@ function parseConstantExpression(text, ctx) {
         return null;
     expr = expr.replace(/\b([01]+)b\b/gi, (_m, bits) => `0b${bits}`);
     try {
-        // Constant-only evaluator used only after a strict character whitelist above.
-        // eslint-disable-next-line no-new-func
         const value = Function(`"use strict"; return (${expr});`)();
         return Number.isFinite(value) ? Number(value) & 0xff : null;
     }
