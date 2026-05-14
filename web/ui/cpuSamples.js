@@ -1,0 +1,38 @@
+export const cpuSamples = [
+    {
+        id: "lab1-minimal",
+        title: "Lab 1: LED bar minimal",
+        hexPath: "./public/samples/lab1_minimal.hex",
+        asmPath: "asm/lab1_minimal.asm",
+        sourcePath: "./public/sources/lab1_minimal.asm",
+        note: "Writes one active-low pattern to latch 0x07 and loops forever.",
+        sourceMode: "asm",
+    },
+    {
+        id: "lab2-static-1988",
+        title: "Lab 2: 7-seg static 1988",
+        hexPath: "./public/samples/lab2_static_1988.hex",
+        asmPath: "asm/lab2_static_1988.asm",
+        sourcePath: "./public/sources/lab2_static_1988.asm",
+        note: "Clears all digits, then latches 1-9-8-8 using addresses 0x04..0x01.",
+        sourceMode: "asm",
+    },
+    {
+        id: "lab3-matrix-s",
+        title: "Lab 3: Matrix letter S",
+        hexPath: "./public/samples/lab3_matrix_s.hex",
+        asmPath: "asm/lab3_matrix_s.asm",
+        sourcePath: "./public/sources/lab3_matrix_s.asm",
+        note: "Scans the 5x7 matrix through 0x05/0x06 and keeps a visible S via dynamic multiplexing.",
+        sourceMode: "asm",
+    },
+    {
+        id: "lab4-keypad-led",
+        title: "Lab 4: Keypad scan to LED line",
+        hexPath: "./public/samples/lab4_keypad_led.hex",
+        asmPath: "asm/lab4_keypad_led.asm",
+        sourcePath: "./public/sources/lab4_keypad_led.asm",
+        note: "Scans keypad columns 0x60/0x50/0x30 in RX mode and mirrors each key to a unique LED pattern at 0x07.",
+        sourceMode: "asm",
+    },
+];
