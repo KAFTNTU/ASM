@@ -21,6 +21,7 @@
     "vite": "^8.0.11"
   },
   "dependencies": {
-    "@bjorn3/browser_wasi_shim": "^0.4.2"
+    "@bjorn3/browser_wasi_shim": "^0.4.2",
+    "three": "^0.184.0"
   }
 }

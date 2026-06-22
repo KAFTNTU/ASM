@@ -53,7 +53,7 @@ input {
   border: 0;
   border-radius: 0;
   display: grid;
-  grid-template-rows: 26px 48px minmax(0, 1fr) 14px var(--messages-height);
+  grid-template-rows: 48px minmax(0, 1fr) 14px var(--messages-height);
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
   overflow: hidden;
   min-height: 0;
@@ -160,17 +160,22 @@ input {
   display: flex;
   align-items: center;
   justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .boardSurfaceMini {
+  --board-scale: 1.1;
   position: relative;
   width: 100%;
-  max-width: 420px;
+  max-width: 462px;
   aspect-ratio: 0.78;
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.07);
   background: #11382f;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .boardCanvasMini {
@@ -182,7 +187,13 @@ input {
 .boardOverlayMini {
   position: absolute;
   inset: 0;
+  width: calc(100% / var(--board-scale));
+  height: calc(100% / var(--board-scale));
   pointer-events: none;
+  transform: scale(var(--board-scale));
+  transform-origin: top left;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .boardBox {
@@ -193,6 +204,14 @@ input {
   border: 1px solid rgba(255,255,255,0.14);
   box-shadow: 0 10px 20px rgba(0,0,0,0.22);
   padding: 8px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.toolbar,
+.toolbar * {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .keypadBox {
@@ -205,6 +224,148 @@ input {
   left: 10px;
   bottom: 10px;
   width: 138px;
+}
+
+.motorBox {
+  right: 14px;
+  top: 112px;
+  width: 166px;
+  text-align: left;
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.motorBox:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255,255,255,0.24);
+}
+
+.motorBox.active,
+.audioBox.active {
+  border-color: rgba(131, 226, 165, 0.42);
+  box-shadow: 0 0 0 1px rgba(131, 226, 165, 0.16), 0 12px 24px rgba(0,0,0,0.24);
+}
+
+.audioBox {
+  left: 26px;
+  top: 18px;
+  width: 102px;
+  min-height: 96px;
+  padding: 8px 7px 7px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 5px;
+  text-align: center;
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 50% 28%, rgba(76, 104, 98, 0.22), transparent 46%),
+    linear-gradient(180deg, rgba(6, 24, 21, 0.96), rgba(8, 27, 24, 0.92));
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.audioBox:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255,255,255,0.24);
+}
+
+.motorPreview {
+  font-size: 11px;
+  color: #eff6ff;
+  margin-bottom: 6px;
+}
+
+.audioPreview {
+  display: none;
+}
+
+.motorHint {
+  font-size: 10px;
+  line-height: 1.35;
+  color: #9fb1c8;
+}
+
+.audioHint {
+  font-size: 9px;
+  line-height: 1.15;
+  color: #9fb1c8;
+}
+
+.audioSpeaker {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 45% 40%, #3a4650 0%, #1c252d 42%, #111921 68%, #0a1117 100%);
+  border: 1px solid rgba(162, 184, 205, 0.18);
+  box-shadow:
+    inset 0 2px 6px rgba(255,255,255,0.08),
+    inset 0 -10px 18px rgba(0,0,0,0.36);
+  overflow: hidden;
+}
+
+.audioSpeakerCone {
+  position: absolute;
+  inset: 7px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 48% 42%, rgba(111, 125, 138, 0.36), rgba(34, 42, 50, 0.12) 35%, rgba(12, 18, 24, 0.06) 58%, rgba(0,0,0,0) 59%),
+    radial-gradient(circle at 50% 50%, #27323b 0%, #171f27 60%, #0c1319 100%);
+  border: 2px solid rgba(76, 88, 100, 0.72);
+  transform-origin: center;
+  transition: transform 0.18s ease;
+}
+
+.audioSpeakerCap {
+  position: absolute;
+  left: 21px;
+  top: 21px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 38% 35%, rgba(120, 132, 145, 0.9), rgba(58, 69, 80, 0.94) 45%, rgba(20, 27, 34, 0.98) 100%);
+  border: 1px solid rgba(96, 108, 121, 0.78);
+  box-shadow:
+    inset 0 1px 2px rgba(255,255,255,0.08),
+    0 0 8px rgba(0,0,0,0.18);
+  transform-origin: center;
+  transition: transform 0.18s ease;
+}
+
+.audioSpeakerRing {
+  position: absolute;
+  inset: 4px;
+  border-radius: 999px;
+  border: 2px solid rgba(70, 82, 94, 0.76);
+  opacity: 0.95;
+}
+
+.audioSpeakerRing.ring1 {
+  inset: 5px;
+}
+
+.audioSpeakerRing.ring2 {
+  inset: 10px;
+  border-color: rgba(88, 102, 116, 0.66);
+}
+
+.audioBox.active .audioSpeakerRing {
+  border-color: rgba(137, 239, 177, 0.34);
+}
+
+.audioBox.active .audioSpeakerCone,
+.audioBox.active .audioSpeakerCap {
+  animation: speakerPulse 0.42s ease-in-out infinite alternate;
+}
+
+@keyframes speakerPulse {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.1);
+  }
 }
 
 .boardCaption {
@@ -288,6 +449,8 @@ input {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .editorShell {
@@ -345,8 +508,9 @@ input {
   border: 0;
   outline: none;
   background: transparent;
-  color: #dbe6f5;
-  caret-color: #dbe6f5;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: #ffffff;
   position: absolute;
   inset: 0;
   padding: 10px 12px;
@@ -408,27 +572,262 @@ input {
 }
 
 .codeHighlight {
-  display: none;
+  display: block;
+  margin: 0;
+  position: absolute;
+  inset: 0;
+  padding: 10px 12px;
+  overflow: visible;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #dbe6f5;
+  white-space: pre;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 1;
+}
+
+.tok-key { color: #8bb3ff; font-weight: 700; }
+.tok-reg { color: #82d8b3; font-weight: 650; }
+.tok-num { color: #e7c87a; }
+.tok-comment { color: #6f7f93; font-style: italic; }
+.tok-str { color: #d6a7ff; }
+.tok-type { color: #4fd1c5; font-weight: 650; }
+.tok-ident { color: #dbe6f5; }
+.tok-char { color: #f0c674; }
+.tok-macro { color: #f0a66a; }
+.tok-pre { color: #f0a66a; font-weight: 650; }
+.tok-fn { color: #6dd6ff; }
+.tok-label { color: #f1d574; font-weight: 700; }
+.tok-op { color: #94a3b8; }
+.diag-line {
+  display: inline-block;
+  min-width: 100%;
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-underline-offset: 3px;
+  border-radius: 3px;
+}
+.diag-error {
+  text-decoration-color: #ff5c6c;
+  background: rgba(255, 92, 108, 0.085);
+}
+.diag-warning {
+  text-decoration-color: transparent;
+  background: transparent;
+}
+.editorText::selection { background: rgba(80, 140, 255, 0.35); }
+
+.autocompleteMenu {
+  position: absolute;
+  left: auto;
+  right: 16px;
+  bottom: 16px;
+  width: min(760px, 62%);
+  max-height: min(380px, 46vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  z-index: 20;
+  padding: 5px;
+  border-radius: 9px;
+  background: rgba(12, 18, 28, 0.98);
+  border: 1px solid rgba(122, 160, 215, 0.28);
+  box-shadow: 0 14px 34px rgba(0,0,0,0.45);
+  scrollbar-width: thin;
+}
+
+.autocompleteMenu.hidden,
+.autocompleteGhost.hidden,
+.fileMenu.hidden,
+.hiddenFileInput {
+  display: none !important;
+}
+
+.autocompleteItem {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(0, 1.3fr) 42px;
+  align-items: start;
+  gap: 7px;
+  min-height: 24px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #d9e6f7;
+  text-align: left;
+  cursor: pointer;
+}
+
+.autocompleteItem:hover,
+.autocompleteItem.active {
+  background: rgba(101, 145, 230, 0.16);
+}
+
+.autocompleteLabel {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  color: #f0f6ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autocompleteDesc {
+  font-size: 10px;
+  color: #92a7c2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.autocompleteKey {
+  justify-self: end;
+  min-width: 38px;
+  padding: 1px 4px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.08);
+  color: #f1d574;
+  font-size: 9px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.autocompleteMenu::-webkit-scrollbar {
+  width: 10px;
+}
+
+.autocompleteMenu::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.04);
+  border-radius: 10px;
+}
+
+.autocompleteMenu::-webkit-scrollbar-thumb {
+  background: rgba(120, 156, 210, 0.62);
+  border-radius: 10px;
+  border: 2px solid rgba(12, 18, 28, 0.98);
+}
+
+.autocompleteGhost {
   margin: 0;
   position: absolute;
   inset: 0;
   padding: 10px 12px;
   overflow: hidden;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 13px;
   line-height: 1.55;
-  color: transparent;
   white-space: pre;
-  max-width: 100%;
+  color: transparent;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
   z-index: 3;
   pointer-events: none;
-  opacity: 1;
 }
 
-.tok-key { color: #8bb3ff; }
-.tok-reg { color: #82d8b3; }
-.tok-num { color: #e7c87a; }
-.tok-comment { color: #6f7f93; }
-.tok-str { color: #d6a7ff; }
+.autocompleteGhostInsert {
+  color: rgba(255, 210, 126, 0.78);
+  background: rgba(255, 210, 126, 0.10);
+  border-left: 2px solid rgba(255, 210, 126, 0.55);
+  box-shadow: 0 0 0 1px rgba(255, 210, 126, 0.06);
+}
+
+.fileNameInput {
+  width: 92px;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: #202733;
+  color: var(--text);
+  outline: none;
+}
+
+.fileNameInput:focus {
+  border-color: rgba(126, 166, 255, 0.45);
+  box-shadow: 0 0 0 2px rgba(126, 166, 255, 0.10);
+}
+
+.fileMenuWrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.fileMenuBtn {
+  min-width: 74px;
+}
+
+.fileMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 190px;
+  z-index: 1000;
+  padding: 6px;
+  border-radius: 10px;
+  background: #111821;
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+}
+
+.fileMenuItem {
+  width: 100%;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.fileMenuItem:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.autosaveMenuItem {
+  color: #e7edf7;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.autosaveMenuItem.saved,
+.autosaveMenuItem.dirty,
+.autosaveMenuItem.disabled {
+  color: #e7edf7;
+}
+
+.autosaveIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.autosaveIcon.on {
+  color: #08130c;
+  background: #52f27c;
+}
+
+.autosaveIcon.off {
+  color: #fff;
+  background: #e33b48;
+}
 
 .editorScrollSlider::before {
   content: "";
@@ -463,6 +862,8 @@ input {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .splitHandle {
@@ -498,6 +899,8 @@ input {
   justify-content: space-between;
   padding: 0 12px;
   background: #1c232e;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .messagesTitle {
@@ -508,6 +911,8 @@ input {
 .messagesBody {
   overflow: auto;
   padding: 4px 10px 8px;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .traceBody {
@@ -530,6 +935,8 @@ input {
   font-size: 12px;
   padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .messageRow.error span:last-child { color: #ff9ea9; }
@@ -596,6 +1003,694 @@ input {
   color: #b9cbe1;
 }
 
+.motorModal {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+  background: transparent;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.motorModal.hidden {
+  display: none;
+}
+
+.motorModal.scope-only-mode {
+  pointer-events: none;
+  background: transparent;
+}
+
+.motorModal.scope-only-mode .scopeDrawer {
+  pointer-events: auto;
+  box-shadow: -14px 0 28px rgba(0, 0, 0, 0.28);
+}
+
+.motorShell {
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  --motor-card-width: min(38vw, 610px);
+  --scope-drawer-width: min(46vw, 680px);
+  --scope-only-width: min(62vw, 860px);
+}
+
+.motorCard {
+  width: var(--motor-card-width);
+  min-width: 460px;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 52px minmax(0, 1fr);
+  background: linear-gradient(180deg, #222b36, #141b24);
+  border-left: 1px solid rgba(255,255,255,0.18);
+  box-shadow: -18px 0 38px rgba(0,0,0,0.42);
+  pointer-events: auto;
+}
+
+.scopeDrawer {
+  width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #dcdcdc;
+  border-left: 1px solid #9f9f9f;
+  transition: width 0.18s ease, opacity 0.18s ease;
+}
+
+.motorShell.scope-open .scopeDrawer {
+  width: var(--scope-drawer-width);
+  opacity: 1;
+  pointer-events: auto;
+  padding: 0;
+}
+
+.motorShell.scope-only .motorCard {
+  display: none;
+}
+
+.motorShell.scope-only .scopeDrawer {
+  width: var(--scope-only-width);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.motorShell.scope-only .motorInfoCard {
+  display: none;
+}
+
+.panelResizeHandle {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+  flex: 0 0 0;
+  position: relative;
+  transition: opacity 0.18s ease;
+}
+
+.panelResizeHandle.visible {
+  width: 12px;
+  flex-basis: 12px;
+  opacity: 1;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.panelResizeGrip {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.panelResizeGrip::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 64px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.06)) left center / 1px 100% no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,0.22), rgba(255,255,255,0.22)) center center / 1px 100% no-repeat,
+    linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.06)) right center / 1px 100% no-repeat;
+}
+
+.motorModal.scope-only-mode .panelResizeHandle.visible {
+  pointer-events: auto;
+}
+
+.motorHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  background: linear-gradient(180deg, #313b48, #1f2732);
+  border-bottom: 1px solid rgba(255,255,255,0.14);
+}
+
+.motorTitle {
+  font-size: 15px;
+  color: #f6f6f6;
+  font-weight: 700;
+}
+
+.motorHeadActions {
+  display: flex;
+  gap: 8px;
+}
+
+.motorAction {
+  height: 32px;
+}
+
+.motorAction.scope-active {
+  background: #445872;
+  color: #ffffff;
+}
+
+.motorBody {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  padding: 14px;
+}
+
+.motorViewportCard,
+.audioViewportCard,
+.motorInfoCard {
+  border-radius: 14px;
+  background: linear-gradient(180deg, #2b3440, #1b222c);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+}
+
+.motorViewportCard {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  padding: 12px;
+}
+
+.audioViewportCard {
+  display: none;
+  min-height: 0;
+  padding: 14px;
+  grid-template-rows: auto auto auto auto auto;
+  gap: 10px;
+}
+
+.motorViewportTop {
+  font-size: 16px;
+  font-weight: 800;
+  color: #f2f2f2;
+}
+
+.audioViewportTop {
+  font-size: 16px;
+  font-weight: 800;
+  color: #f2f2f2;
+}
+
+.motorViewportHint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #aebed3;
+}
+
+.audioViewportHint {
+  font-size: 11px;
+  color: #aebed3;
+}
+
+.motorViewButtons {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.audioDemoButtons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.motorViewBtn {
+  height: 24px;
+  min-width: 52px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.motorViewport {
+  min-height: 320px;
+  margin-top: 10px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: radial-gradient(circle at 30% 20%, #354150, #11161d 72%);
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.audioMeters {
+  display: grid;
+  gap: 10px;
+}
+
+.audioMeterTitle {
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: #cdd7e4;
+}
+
+.audioMeterTrack {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.audioMeterFill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #52c18f, #ebcb58, #ff7748);
+  transition: width 0.12s linear;
+}
+
+.audioMicControl {
+  display: grid;
+  gap: 6px;
+}
+
+.audioMicLabel {
+  font-size: 11px;
+  color: #cdd7e4;
+}
+
+.audioMicSlider {
+  width: 100%;
+}
+
+.audioRoute {
+  font-size: 11px;
+  color: #d6dde8;
+}
+
+.motorCanvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.motorShell.audio-mode .motorViewportCard {
+  display: none;
+}
+
+.motorShell.audio-mode .audioViewportCard {
+  display: grid;
+}
+
+.motorSide {
+  display: none;
+}
+
+.motorInfoCard {
+  padding: 12px;
+}
+
+.motorInfoCard h3 {
+  margin: 0 0 10px;
+  color: #f0f0f0;
+  font-size: 13px;
+}
+
+.motorStats {
+  display: grid;
+  gap: 4px;
+}
+
+.motorStatTiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.motorStatTile {
+  padding: 10px 11px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(167,188,216,0.12);
+  display: grid;
+  gap: 6px;
+}
+
+.motorStatTile span {
+  color: #adc0d8;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.motorStatTile b {
+  color: #ffffff;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.motorMetaRow {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  display: grid;
+  gap: 6px;
+  color: #bfd0e5;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.motorMetaRow b {
+  color: #fff;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.multisimScopeDrawer {
+  color: #000;
+  font-family: Arial, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.multisimScopeDrawer * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.scopeWindowCaption {
+  height: 28px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #595454;
+  color: #fff;
+  border-bottom: 1px solid #a4a4a4;
+}
+
+.scopeWindowTitle {
+  font-size: 10px;
+}
+
+.scopeCaptionLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scopeSourcePicker {
+  height: 20px;
+  max-width: 190px;
+  border: 1px solid #9b9b9b;
+  border-radius: 3px;
+  background: #f3f3f3;
+  color: #111;
+  font-size: 10px;
+}
+
+.scopeCaptionActions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.scopeRunBtn {
+  min-width: 44px;
+  height: 18px;
+  padding: 0 7px;
+  font-size: 9px;
+}
+
+.scopeCaptionClose {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.multisimScopeScreen {
+  width: calc(100% - 12px);
+  margin: 6px;
+  display: block;
+  border: 2px inset #bdbdbd;
+  border-radius: 0;
+  background: #000;
+}
+
+.scopeInfoRowMain {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr) 126px;
+  gap: 6px;
+  padding: 0 6px 6px;
+}
+
+.scopeCursorPad,
+.scopeReadoutPanel,
+.scopeUtilityPanel,
+.multisimControlGroup {
+  background: #efefef;
+  border: 1px solid #c6c6c6;
+}
+
+.scopeCursorPad {
+  padding: 4px;
+  overflow: hidden;
+}
+
+.scopeCursorRow {
+  display: grid;
+  grid-template-columns: 42px 28px 28px;
+  gap: 4px;
+  align-items: center;
+  min-height: 28px;
+  font-size: 11px;
+}
+
+.scopeCursorRow > span:first-child {
+  line-height: 1.1;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.scopeReadoutPanel {
+  min-height: 92px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.multisimReadoutTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+
+.multisimReadoutTable th,
+.multisimReadoutTable td {
+  padding: 4px 7px;
+  text-align: left;
+  border-bottom: 1px solid #dedede;
+}
+
+.multisimReadoutTable thead th {
+  font-weight: 400;
+  background: #fff;
+}
+
+.scopeUtilityPanel {
+  padding: 6px;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.scopeExtTriggerRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.scopeRadioDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid #b5b5b5;
+  background: #fff;
+}
+
+.scopeRadioDot.active {
+  background: #4f94d4;
+  box-shadow: inset 0 0 0 3px #fff;
+}
+
+.scopeExtTriggerRow {
+  cursor: pointer;
+}
+
+.multisimControlStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 6px 6px;
+}
+
+.multisimScopeDrawer .motorInfoCard {
+  margin: 0 6px 6px;
+  border-radius: 0;
+  background: #efefef;
+  border: 1px solid #c6c6c6;
+  box-shadow: none;
+}
+
+.multisimScopeDrawer .motorInfoCard h3 {
+  color: #000;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.multisimScopeDrawer .motorStatTile {
+  background: #fff;
+  border: 1px solid #d5d5d5;
+  border-radius: 0;
+  padding: 6px 7px;
+}
+
+.multisimScopeDrawer .motorStatTile span {
+  color: #3a3a3a;
+  font-size: 10px;
+}
+
+.multisimScopeDrawer .motorStatTile b {
+  color: #000;
+  font-size: 13px;
+}
+
+.multisimControlGroup {
+  padding: 6px;
+}
+
+.scopeControlGroupTitle {
+  font-size: 10px;
+  margin-bottom: 6px;
+}
+
+.scopeControlLine {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.scopeControlLabel {
+  width: 56px;
+  flex: 0 0 56px;
+}
+
+.scopeSpinner {
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 86px;
+}
+
+.scopeSpinner.small {
+  min-width: 62px;
+}
+
+.scopeSpinnerValue {
+  width: 72px;
+  min-width: 72px;
+  min-height: 20px;
+  padding: 2px 5px;
+  border: 1px solid #d5d5d5;
+  background: #fff;
+  color: #000;
+  font-size: 10px;
+}
+
+.scopeSpinner.small .scopeSpinnerValue {
+  width: 44px;
+  min-width: 44px;
+}
+
+.scopeSpinnerButtons {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  width: 16px;
+  min-width: 16px;
+  margin-left: 2px;
+}
+
+.scopeSpinnerBtn {
+  width: 16px;
+  min-width: 16px;
+  height: 10px;
+  padding: 0;
+  font-size: 7px;
+  line-height: 1;
+  border-radius: 0;
+}
+
+.scopeButtonRow,
+.scopeTinyRow {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.scopeLevelRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scopeLevelUnit {
+  min-width: 12px;
+  font-size: 10px;
+}
+
+.scopePushBtn,
+.scopeActionBtn {
+  height: 20px;
+  min-width: 20px;
+  padding: 0 7px;
+  border: 1px solid #89a8c8;
+  background: #fff;
+  color: #000;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.scopePushBtn.active,
+.scopeActionBtn.active {
+  background: #d9ebff;
+  border-color: #5d8fc8;
+}
+
+.scopeActionBtn {
+  min-width: 100%;
+}
+
+body.panel-resizing {
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.motorScopeNote,
+.motorNotes {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #e0e0e0;
+}
+
+.motorNotes p {
+  margin: 0 0 8px;
+}
+
 @media (max-width: 900px) {
   body {
     overflow: auto;
@@ -609,7 +1704,7 @@ input {
   .windowCard {
     height: auto;
     min-height: 100vh;
-    grid-template-rows: 26px 48px auto 14px 140px;
+    grid-template-rows: 48px auto 14px 140px;
   }
 
   .mainRow {
@@ -624,6 +1719,34 @@ input {
 
   .boardSurfaceMini {
     max-width: 100%;
+  }
+
+  .motorCard {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .motorBody {
+    grid-template-columns: 1fr;
+  }
+
+  .motorShell {
+    width: 100%;
+  }
+
+  .motorShell.scope-open .scopeDrawer {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .scopeHead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scopeControls {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 

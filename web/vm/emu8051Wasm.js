@@ -1,18 +1,8 @@
 import { WASI, File, OpenFile, PreopenDirectory } from "https://cdn.jsdelivr.net/npm/@bjorn3/browser_wasi_shim@0.4.2/+esm";
 export class Emu8051Wasm {
     constructor(exports, cpuPtr) {
-        Object.defineProperty(this, "exports", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: exports
-        });
-        Object.defineProperty(this, "cpuPtr", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: cpuPtr
-        });
+        this.exports = exports;
+        this.cpuPtr = cpuPtr;
     }
     static async create(params = {}) {
         const codeSize = params.codeSize ?? 64 * 1024;

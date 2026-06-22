@@ -2,12 +2,7 @@ const SEG_ON = "rgba(255,204,102,0.95)";
 const SEG_OFF = "rgba(255,255,255,0.10)";
 class SevenSegDigit {
     constructor(state) {
-        Object.defineProperty(this, "state", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: state
-        });
+        this.state = state;
     }
     write(data) {
         this.state.raw = data & 0xff;
@@ -15,17 +10,12 @@ class SevenSegDigit {
 }
 export class SevenSeg4 {
     constructor() {
-        Object.defineProperty(this, "digits", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: [
-                { raw: 0xff },
-                { raw: 0xff },
-                { raw: 0xff },
-                { raw: 0xff },
-            ]
-        });
+        this.digits = [
+            { raw: 0xff },
+            { raw: 0xff },
+            { raw: 0xff },
+            { raw: 0xff },
+        ];
     }
     digit(index) {
         return new SevenSegDigit(this.digits[index]);

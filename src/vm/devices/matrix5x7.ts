@@ -12,17 +12,19 @@ export class Matrix5x7 {
   private colReg = 0x00; // active-high
   private forcedPoint: { row: number; col: number } | null = null;
   private glowUntil = Array.from({ length: 7 }, () => Array(5).fill(0));
-  private static readonly PERSIST_MS = 6;
+  // The lab snippets often multiplex the 5x7 matrix with fairly long software delays.
+  // Keep points alive a bit longer so methodology code still forms the intended symbol.
+  private static readonly PERSIST_MS = 48;
 
   rowsDevice(): BusDevice {
     return new SimpleWriteDevice((d) => {
       this.rowReg = d;
+      this.refreshGlow();
     });
   }
   colsDevice(): BusDevice {
     return new SimpleWriteDevice((d) => {
       this.colReg = d;
-      // Refresh on column strobe to avoid ghost rows during row-switch writes.
       this.refreshGlow();
     });
   }
@@ -43,6 +45,7 @@ export class Matrix5x7 {
   }
 
   render(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+    this.refreshGlow();
     ctx.save();
     const width = 132;
     const height = 186;
@@ -70,8 +73,8 @@ export class Matrix5x7 {
         if (this.forcedPoint && this.forcedPoint.row === r && this.forcedPoint.col === c) {
           on = true;
         }
-        const cx = x + padX + (cols - 1 - c) * stepX;
-        const cy = y + padY + r * stepY;
+        const cx = x + padX + c * stepX;
+        const cy = y + padY + (rows - 1 - r) * stepY;
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
         ctx.fillStyle = on ? "rgba(122,162,255,0.95)" : "rgba(255,255,255,0.10)";

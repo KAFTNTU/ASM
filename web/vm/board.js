@@ -1,46 +1,16 @@
 import { PeripheralBus } from "./peripheralBus.js";
 export class Board {
     constructor() {
-        Object.defineProperty(this, "bus", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: new PeripheralBus()
-        });
-        Object.defineProperty(this, "ports", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: {
-                P0: 0xff,
-                P2: 0x00,
-                P3: 0xff,
-            }
-        });
-        Object.defineProperty(this, "abortSignal", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: null
-        });
-        Object.defineProperty(this, "extraDevices", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: {}
-        });
-        Object.defineProperty(this, "joystick", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: { x: 2048, y: 2048 }
-        });
-        Object.defineProperty(this, "keypadPressed", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: new Set()
-        });
+        this.bus = new PeripheralBus();
+        this.ports = {
+            P0: 0xff,
+            P2: 0x00,
+            P3: 0xff,
+        };
+        this.abortSignal = null;
+        this.extraDevices = {};
+        this.joystick = { x: 2048, y: 2048 };
+        this.keypadPressed = new Set();
     }
     reset() {
         this.ports = { P0: 0xff, P2: 0x00, P3: 0xff };
@@ -180,7 +150,7 @@ export class Board {
         roundRect(ctx, boardX, boardY, boardW, boardH, 14, false, false);
         ctx.clip();
         this.extraDevices.sevenSeg?.render(ctx, boardX + boardW - 282, boardY + 34);
-        this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 148);
+        this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 154);
         this.extraDevices.matrix?.render(ctx, boardX + 72, boardY + 256);
         this.extraDevices.lcd?.render(ctx, boardX + boardW - 306, boardY + 252);
         ctx.restore();

@@ -1,11 +1,6 @@
 class SimpleWriteDevice {
     constructor(onWrite) {
-        Object.defineProperty(this, "onWrite", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: onWrite
-        });
+        this.onWrite = onWrite;
     }
     write(data) {
         this.onWrite(data & 0xff);
@@ -13,40 +8,20 @@ class SimpleWriteDevice {
 }
 export class Matrix5x7 {
     constructor() {
-        Object.defineProperty(this, "rowReg", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 0xff
-        }); // active-low
-        Object.defineProperty(this, "colReg", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 0x00
-        }); // active-high
-        Object.defineProperty(this, "forcedPoint", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: null
-        });
-        Object.defineProperty(this, "glowUntil", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: Array.from({ length: 7 }, () => Array(5).fill(0))
-        });
+        this.rowReg = 0xff; // active-low
+        this.colReg = 0x00; // active-high
+        this.forcedPoint = null;
+        this.glowUntil = Array.from({ length: 7 }, () => Array(5).fill(0));
     }
     rowsDevice() {
         return new SimpleWriteDevice((d) => {
             this.rowReg = d;
+            this.refreshGlow();
         });
     }
     colsDevice() {
         return new SimpleWriteDevice((d) => {
             this.colReg = d;
-            // Refresh on column strobe to avoid ghost rows during row-switch writes.
             this.refreshGlow();
         });
     }
@@ -64,6 +39,7 @@ export class Matrix5x7 {
         this.glowUntil = Array.from({ length: 7 }, () => Array(5).fill(0));
     }
     render(ctx, x, y) {
+        this.refreshGlow();
         ctx.save();
         const width = 132;
         const height = 186;
@@ -89,8 +65,8 @@ export class Matrix5x7 {
                 if (this.forcedPoint && this.forcedPoint.row === r && this.forcedPoint.col === c) {
                     on = true;
                 }
-                const cx = x + padX + (cols - 1 - c) * stepX;
-                const cy = y + padY + r * stepY;
+                const cx = x + padX + c * stepX;
+                const cy = y + padY + (rows - 1 - r) * stepY;
                 ctx.beginPath();
                 ctx.arc(cx, cy, radius, 0, Math.PI * 2);
                 ctx.fillStyle = on ? "rgba(122,162,255,0.95)" : "rgba(255,255,255,0.10)";
@@ -116,12 +92,9 @@ export class Matrix5x7 {
         }
     }
 }
-Object.defineProperty(Matrix5x7, "PERSIST_MS", {
-    enumerable: true,
-    configurable: true,
-    writable: true,
-    value: 6
-});
+// The lab snippets often multiplex the 5x7 matrix with fairly long software delays.
+// Keep points alive a bit longer so methodology code still forms the intended symbol.
+Matrix5x7.PERSIST_MS = 48;
 function timeNow() {
     if (typeof performance !== "undefined" && typeof performance.now === "function") {
         return performance.now();

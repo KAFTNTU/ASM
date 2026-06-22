@@ -214,36 +214,11 @@ Object.assign(LCD_CHAR_MAP, {
 });
 export class Lcd16x2 {
     constructor() {
-        Object.defineProperty(this, "lines", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: Array.from({ length: LCD_ROWS }, () => spaces(LCD_COLS))
-        });
-        Object.defineProperty(this, "cellCodes", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: Array.from({ length: LCD_ROWS }, () => Array.from({ length: LCD_COLS }, () => 0x20))
-        });
-        Object.defineProperty(this, "cursor", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 0
-        });
-        Object.defineProperty(this, "pendingNibble", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: null
-        });
-        Object.defineProperty(this, "busLog", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: []
-        });
+        this.lines = Array.from({ length: LCD_ROWS }, () => spaces(LCD_COLS));
+        this.cellCodes = Array.from({ length: LCD_ROWS }, () => Array.from({ length: LCD_COLS }, () => 0x20));
+        this.cursor = 0;
+        this.pendingNibble = null;
+        this.busLog = [];
     }
     reset() {
         this.lines = Array.from({ length: LCD_ROWS }, () => spaces(LCD_COLS));

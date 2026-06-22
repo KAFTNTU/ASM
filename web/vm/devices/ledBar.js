@@ -1,11 +1,6 @@
 export class LedBar {
     constructor() {
-        Object.defineProperty(this, "value", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 0xff
-        }); // active-low
+        this.value = 0xff; // active-low
     }
     write(data) {
         this.value = data & 0xff;

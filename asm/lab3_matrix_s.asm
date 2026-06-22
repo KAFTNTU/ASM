@@ -80,6 +80,4 @@ delay_inner:
   ret
 
 ldelay:
-  acall delay
-  acall delay
   ret

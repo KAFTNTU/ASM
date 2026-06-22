@@ -1,17 +1,7 @@
 export class PeripheralBus {
     constructor() {
-        Object.defineProperty(this, "devices", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: new Map()
-        });
-        Object.defineProperty(this, "readProviders", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: []
-        });
+        this.devices = new Map();
+        this.readProviders = [];
     }
     registerDevice(addr, device) {
         this.devices.set(addr & 0xff, device);

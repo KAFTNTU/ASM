@@ -175,7 +175,7 @@ export class Board {
     roundRect(ctx, boardX, boardY, boardW, boardH, 14, false, false);
     ctx.clip();
     this.extraDevices.sevenSeg?.render(ctx, boardX + boardW - 282, boardY + 34);
-    this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 148);
+    this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 154);
     this.extraDevices.matrix?.render(ctx, boardX + 72, boardY + 256);
     this.extraDevices.lcd?.render(ctx, boardX + boardW - 306, boardY + 252);
     ctx.restore();

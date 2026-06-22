@@ -1,4 +1,4 @@
-import { parseIntelHex } from "../vm/emu8051Wasm";
+﻿import { parseIntelHex } from "../vm/emu8051Wasm";
 
 export type SourceMode = "asm" | "c" | "hex" | "js";
 
@@ -32,22 +32,16 @@ function analyzeAsm(code: string): DiagnosticItem[] {
   const hasSdasArea = /\.area\b/i.test(code);
   const hasWritePath = /\bmov\s+p0\b/i.test(code) && /\bmov\s+p2\b/i.test(code);
   const hasDirControl = /\bp3\.6\b/i.test(code);
-  const labelSet = new Set<string>();
 
   lines.forEach((raw, index) => {
     const line = raw.trim();
     if (!line) return;
 
-    const labelMatch = /^([A-Za-z_.$?][\w.$?]*):/.exec(line);
-    if (labelMatch) {
-      labelSet.add(labelMatch[1].toLowerCase());
-    }
-
     if (line.includes("//")) {
       diagnostics.push({
         level: "warning",
         line: index + 1,
-        message: "Краще замінити `//` на `;`, бо SDAS8051 стабільніше сприймає asm-коментарі саме так.",
+        message: "Краще замінити `//` на `;`, бо SDAS8051 надійніше обробляє ASM-коментарі саме так.",
       });
     }
 
@@ -57,7 +51,7 @@ function analyzeAsm(code: string): DiagnosticItem[] {
         diagnostics.push({
           level: "warning",
           line: index + 1,
-          message: `Підпрограма \`${target}\` не знайдена в поточному тексті.`,
+          message: `Підпрограму \`${target}\` не знайдено в поточному коді.`,
         });
       }
     }
@@ -66,42 +60,42 @@ function analyzeAsm(code: string): DiagnosticItem[] {
   if (!hasKeilOrg && !hasSdasArea) {
     diagnostics.push({
       level: "error",
-      message: "Не видно ні `ORG`, ні `.area HOME (CODE)`. Потрібна точка входу для 8051 програми.",
+      message: "Не знайдено ні `ORG`, ні `.area HOME (CODE)`. Для програми 8051 потрібна визначена точка входу.",
     });
   }
 
   if (!/\bEND\b|\.end\b/i.test(code)) {
     diagnostics.push({
       level: "warning",
-      message: "Немає `END` / `.end`. Для прикладів з методички це бажано додати в кінець файлу.",
+      message: "Немає `END` / `.end`. Для лабораторних прикладів краще додати це в кінці файла.",
     });
   }
 
   if (!hasWritePath) {
     diagnostics.push({
       level: "hint",
-      message: "У коді не видно типового ST841 запису через `P0 -> P2 -> P2=0x00`. Може не вистачати bus-latch логіки.",
+      message: "У коді не видно типовий шлях запису ST841 `P0 -> P2 -> P2=0x00`. Може бракувати логіки шини й latch.",
     });
   }
 
   if (!hasDirControl) {
     diagnostics.push({
       level: "hint",
-      message: "Не видно керування `P3.6`. Для стенда це важливо: `1` = TX, `0` = RX.",
+      message: "Не знайдено керування напрямком через `P3.6`. На цьому стенді це важливо: `1` = TX, `0` = RX.",
     });
   }
 
   if (hasKeilOrg && hasSdasArea) {
     diagnostics.push({
       level: "hint",
-      message: "У тексті змішані Keil-style (`ORG`) і SDAS-style (`.area`) директиви. Краще тримати один стиль.",
+      message: "У коді змішані директиви стилю Keil (`ORG`) і SDAS (`.area`). Краще залишити один стиль.",
     });
   }
 
   if (diagnostics.length === 0) {
     diagnostics.push({
       level: "hint",
-      message: "ASM виглядає чисто. Для запуску в рантаймі зараз використовується HEX з ROM-панелі або зразка.",
+      message: "ASM виглядає коректно. Під час запуску симулятор зараз завантажує HEX з панелі ROM або зі зразка.",
     });
   }
 
@@ -116,7 +110,7 @@ function analyzeC(code: string): DiagnosticItem[] {
   if (!/\bmain\s*\(/.test(code)) {
     diagnostics.push({
       level: "error",
-      message: "Не знайдено `main(...)`. Для лабораторної зазвичай потрібна точка входу.",
+      message: "Не знайдено функцію `main(...)`. Для лабораторних робіт зазвичай потрібна точка входу.",
     });
   }
 
@@ -139,7 +133,7 @@ function analyzeC(code: string): DiagnosticItem[] {
       diagnostics.push({
         level: "warning",
         line: index + 1,
-        message: "Схоже, тут бракує `;` наприкінці рядка.",
+        message: "Схоже, в кінці рядка пропущено `;`.",
       });
     }
   });
@@ -147,20 +141,20 @@ function analyzeC(code: string): DiagnosticItem[] {
   if (braceBalance !== 0) {
     diagnostics.push({
       level: "error",
-      message: "Незбалансовані `{}` у C-коді.",
+      message: "У C-коді не збігається кількість дужок `{}`.",
     });
   }
 
   if (!/\bP0\b|\bP2\b|\bP3\b|\bGPIO\b|\bADCCON/i.test(code)) {
     diagnostics.push({
       level: "hint",
-      message: "Не видно доступу до портів/ADC. Для стенда код зазвичай звертається до `P0/P2/P3` або ADC-регістрів.",
+      message: "Не видно доступу до портів або АЦП. Код для стенда зазвичай працює з `P0/P2/P3` або регістрами ADC.",
     });
   }
 
   diagnostics.push({
     level: "hint",
-    message: "C-перевірка зараз дає підказки по синтаксису й ST841-патернах. Автокомпіляцію `C -> HEX` я ще не підключав.",
+    message: "Перевірка C зараз дає лише синтаксичні підказки та типові шаблони ST841. Автоматична збірка `C -> HEX` ще не підключена.",
   });
 
   return diagnostics;
@@ -174,7 +168,7 @@ function analyzeHex(code: string): DiagnosticItem[] {
     .filter(Boolean);
 
   if (lines.length === 0) {
-    return [{ level: "error", message: "HEX-поле порожнє." }];
+    return [{ level: "error", message: "Поле HEX порожнє." }];
   }
 
   for (let index = 0; index < lines.length; index++) {
@@ -183,7 +177,7 @@ function analyzeHex(code: string): DiagnosticItem[] {
       diagnostics.push({
         level: "error",
         line: index + 1,
-        message: "Кожен рядок Intel HEX має починатись з `:`.",
+        message: "Кожен рядок Intel HEX має починатися з `:`.",
       });
       continue;
     }
@@ -192,7 +186,7 @@ function analyzeHex(code: string): DiagnosticItem[] {
       diagnostics.push({
         level: "error",
         line: index + 1,
-        message: "Схожий на пошкоджений Intel HEX рядок.",
+        message: "Схоже, цей рядок Intel HEX пошкоджений.",
       });
       continue;
     }
@@ -205,7 +199,7 @@ function analyzeHex(code: string): DiagnosticItem[] {
       diagnostics.push({
         level: "error",
         line: index + 1,
-        message: "HEX-рядок містить невалідні символи.",
+        message: "У рядку HEX є недопустимі символи.",
       });
       continue;
     }
@@ -215,8 +209,23 @@ function analyzeHex(code: string): DiagnosticItem[] {
       diagnostics.push({
         level: "warning",
         line: index + 1,
-        message: `Довжина рядка не збігається з полем byte-count (${len}).`,
+        message: `Довжина рядка не відповідає полю кількості байтів (${len}).`,
       });
+    }
+
+    const allBytes: number[] = [];
+    for (let i = 1; i < line.length - 1; i += 2) {
+      allBytes.push(parseHex(line.slice(i, i + 2)));
+    }
+    if (!allBytes.some(Number.isNaN)) {
+      const sum = allBytes.reduce((acc, b) => (acc + b) & 0xff, 0);
+      if (sum !== 0) {
+        diagnostics.push({
+          level: "error",
+          line: index + 1,
+          message: `Неправильна контрольна сума HEX-рядка (очікувалось 0x00, отримано 0x${sum.toString(16).toUpperCase().padStart(2, "0")}).`,
+        });
+      }
     }
   }
 
@@ -230,7 +239,7 @@ function analyzeHex(code: string): DiagnosticItem[] {
     } else {
       diagnostics.push({
         level: "hint",
-        message: `HEX розібрався нормально: ${parsed.length / 2} байт коду.`,
+        message: `HEX успішно розібрано: ${parsed.length / 2} байт коду.`,
       });
     }
   } catch (error) {
@@ -249,7 +258,7 @@ function analyzeJs(code: string): DiagnosticItem[] {
     return [
       {
         level: "hint",
-        message: "JS-сценарій синтаксично виглядає нормально.",
+        message: "JS-скрипт синтаксично виглядає коректним.",
       },
     ];
   } catch (error) {

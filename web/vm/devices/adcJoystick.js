@@ -1,17 +1,7 @@
 export class AdcJoystick {
     constructor() {
-        Object.defineProperty(this, "x", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 512
-        });
-        Object.defineProperty(this, "y", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 512
-        });
+        this.x = 512;
+        this.y = 512;
     }
     set(x, y) {
         this.x = clamp(x);

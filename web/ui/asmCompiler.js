@@ -27,6 +27,11 @@ const DIRECT_MAP = {
     t3con: 0xae,
     t3fd: 0xaf,
     pwmcon: 0xd7,
+    // NOTE: On ADuC841, PWM and DAC SFRs share the same physical addresses.
+    // PWM registers (when DACCON.PD=0): 0xFA=PWM0L, 0xFB=PWM0H, 0xFC=PWM1L, 0xFD=PWM1H
+    // DAC registers (when DACCON.PD=1): 0xFA=DAC0H, 0xFB=DAC1L, 0xFC=DAC1H, 0xFD=DACCON
+    // Writing to pwm0l and dac0h writes to the SAME physical SFR 0xFA.
+    // Choose the alias that matches your DACCON.PD mode.
     pwm0h: 0xfb,
     pwm0l: 0xfa,
     pwm1h: 0xfd,
@@ -131,6 +136,16 @@ export function compileAsm(source) {
             equ.set(bitMatchDecl[1].toLowerCase(), bitMatchDecl[2].trim());
             continue;
         }
+        const sbitMatch = /^sbit\s+([A-Za-z_.$?][\w.$?]*)\s*=\s*(.+)$/i.exec(text);
+        if (sbitMatch) {
+            equ.set(sbitMatch[1].toLowerCase(), sbitMatch[2].trim());
+            continue;
+        }
+        const sfrMatch = /^sfr\s+([A-Za-z_.$?][\w.$?]*)\s*=\s*(.+)$/i.exec(text);
+        if (sfrMatch) {
+            equ.set(sfrMatch[1].toLowerCase(), sfrMatch[2].trim());
+            continue;
+        }
         const orgMatch = /^org\s+(.+)$/i.exec(text);
         if (orgMatch) {
             const value = resolveNumber(orgMatch[1], equ);
@@ -184,6 +199,15 @@ export function compileAsm(source) {
     }
     const bytes = flattenMap(map);
     const hex = toIntelHex(map);
+    const loweredSource = source.toLowerCase();
+    const usesPwmRegs = /\bpwm(?:con|0l|0h|1l|1h)\b/.test(loweredSource);
+    const usesDacRegs = /\bdac(?:con|0l|0h|1l|1h)\b/.test(loweredSource);
+    if (usesPwmRegs && usesDacRegs) {
+        diagnostics.push({
+            level: "warning",
+            message: "PWM \u0456 DAC \u0443 ST841 \u043c\u0430\u044e\u0442\u044c \u0441\u043f\u0456\u043b\u044c\u043d\u0456 SFR-\u0430\u0434\u0440\u0435\u0441\u0438. \u042f\u043a\u0449\u043e \u0437\u043c\u0456\u0448\u0430\u0442\u0438 \u0457\u0445 \u0432 \u043e\u0434\u043d\u043e\u043c\u0443 \u043a\u043e\u0434\u0456, \u0440\u0435\u0433\u0456\u0441\u0442\u0440\u0438 \u043c\u043e\u0436\u0443\u0442\u044c \u043f\u0435\u0440\u0435\u0437\u0430\u043f\u0438\u0441\u0443\u0432\u0430\u0442\u0438 \u043e\u0434\u043d\u0435 \u043e\u0434\u043d\u043e\u0433\u043e.",
+        });
+    }
     if (bytes.length && !diagnostics.length) {
         diagnostics.push({ level: "hint", message: "ASM compiled to HEX successfully." });
     }
@@ -255,12 +279,16 @@ function estimateSize(mnemonic, operands, equ) {
         case "xrl":
             if (operands.length !== 2)
                 return 0;
+            // ANL/ORL/XRL A,Rn  -> 1 byte
+            if ((arg0 === "a" || arg0 === "acc") && isRegisterToken(arg1))
+                return 1;
+            // ANL/ORL/XRL A,<other> -> 2 bytes
             if (arg0 === "a" || arg0 === "acc" || arg0 === "c")
                 return 2;
-            if (isRegisterToken(arg0))
-                return 2;
+            // ANL/ORL/XRL Rn,#imm or @Ri,#imm -> lowered to 4 bytes (MOV A,x; OP A,#imm; MOV x,A)
             if ((isRegisterToken(arg0) || arg0 === "@r0" || arg0 === "@r1") && arg1.startsWith("#"))
                 return 4;
+            // ANL/ORL direct,#imm -> 3 bytes; direct,A -> 2 bytes
             return arg1.startsWith("#") ? 3 : 2;
         case "add":
         case "addc":
@@ -296,11 +324,14 @@ function estimateSize(mnemonic, operands, equ) {
             return operands.length <= 1 ? 1 : 0;
         case "movx":
             return operands.length === 2 ? 1 : 0;
-        case "call":
         case "acall":
+        case "ajmp":
+            if (operands.length !== 1)
+                return 0;
+            return 2; // 2-byte page-relative instruction
+        case "call":
         case "lcall":
         case "jmp":
-        case "ajmp":
         case "ljmp":
             if (operands.length !== 1)
                 return 0;
@@ -315,16 +346,17 @@ function estimateSize(mnemonic, operands, equ) {
             return operands.length === 1 ? 2 : 0;
         case "jb":
         case "jnb":
+            return operands.length === 2 ? 6 : 0;
         case "jbc":
-            return operands.length === 2 ? 3 : 0;
+            return operands.length === 2 ? 8 : 0;
         case "cjne":
             if (operands.length !== 3)
                 return 0;
             if (isRegisterToken(arg0) || arg0 === "a" || arg0 === "acc" || arg0 === "@r0" || arg0 === "@r1")
-                return 3;
+                return 8;
             if (arg1.startsWith("#") && resolveNumber(arg0, equ) != null)
-                return 5;
-            return 3;
+                return 10;
+            return 8;
         case "djnz":
             if (operands.length !== 2)
                 return 0;
@@ -372,7 +404,8 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
                 const value = resolveValue(operand, labels, equ);
                 if (value == null)
                     return fail(`Cannot resolve DW value: ${operand}`);
-                bytes.push(value & 0xff, (value >> 8) & 0xff);
+                // 8051 DW is big-endian: high byte first (matches MOVC table addressing)
+                bytes.push((value >> 8) & 0xff, value & 0xff);
             }
             return bytes;
         }
@@ -644,16 +677,26 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
                 return [0x84];
             return fail("Only DIV AB is supported.");
         }
+        case "acall": {
+            // ACALL is a 2-byte page-relative call: opcode = 0x11 | (page << 5), addr_low
+            // Page = target[15:11] (upper 5 bits). Target must be within the same 2KB page as PC+2.
+            const [target] = ops;
+            if (target.type !== "addr")
+                return fail("ACALL expects address.");
+            const page = (target.value >> 8) & 0xf8; // bits [15:11] -> upper 3 bits of opcode
+            const pcPage = ((entry.address + 2) >> 8) & 0xf8;
+            if (page !== pcPage)
+                return fail(`ACALL: target 0x${target.value.toString(16).toUpperCase()} is outside the current 2KB page (use LCALL instead).`);
+            return [0x11 | (((target.value >> 8) & 0x07) << 5), target.value & 0xff];
+        }
         case "call":
-        case "acall":
         case "lcall": {
             const [target] = ops;
             if (target.type !== "addr")
-                return fail("CALL expects address.");
+                return fail("LCALL expects address.");
             return [0x12, (target.value >> 8) & 0xff, target.value & 0xff];
         }
         case "jmp":
-        case "ajmp":
         case "ljmp": {
             const [target] = ops;
             if (entry.mnemonic === "jmp" && target.type === "codeptr")
@@ -661,6 +704,17 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
             if (target.type !== "addr")
                 return fail("JMP expects address.");
             return [0x02, (target.value >> 8) & 0xff, target.value & 0xff];
+        }
+        case "ajmp": {
+            // AJMP is a 2-byte page-relative jump: opcode = 0x01 | (page << 5), addr_low
+            const [target] = ops;
+            if (target.type !== "addr")
+                return fail("AJMP expects address.");
+            const page = (target.value >> 8) & 0xf8;
+            const pcPage = ((entry.address + 2) >> 8) & 0xf8;
+            if (page !== pcPage)
+                return fail(`AJMP: target 0x${target.value.toString(16).toUpperCase()} is outside the current 2KB page (use LJMP instead).`);
+            return [0x01 | (((target.value >> 8) & 0x07) << 5), target.value & 0xff];
         }
         case "sjmp":
         case "jz":
@@ -685,16 +739,30 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
             return [opcode, rel];
         }
         case "jb":
-        case "jnb":
-        case "jbc": {
+        case "jnb": {
             const [bit, target] = ops;
             if (target.type !== "addr" || bit.type !== "bit")
                 return fail(`${entry.mnemonic.toUpperCase()} expects bit,label.`);
-            const rel = relativeOffset(entry.address, 3, target.value);
-            if (rel == null)
-                return fail(`${entry.mnemonic.toUpperCase()} target is out of range.`);
-            const opcode = entry.mnemonic === "jb" ? 0x20 : entry.mnemonic === "jnb" ? 0x30 : 0x10;
-            return [opcode, bit.value, rel];
+            if (entry.mnemonic === "jb") {
+                // Long-safe form:
+                //   JNB bit, +3
+                //   LJMP target
+                return [0x30, bit.value, 0x03, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
+            }
+            // Long-safe form:
+            //   JB bit, +3
+            //   LJMP target
+            return [0x20, bit.value, 0x03, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
+        }
+        case "jbc": {
+            const [bit, target] = ops;
+            if (target.type !== "addr" || bit.type !== "bit")
+                return fail("JBC expects bit,label.");
+            // Long-safe form:
+            //   JNB bit, +5
+            //   CLR bit
+            //   LJMP target
+            return [0x30, bit.value, 0x05, 0xc2, bit.value, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
         }
         case "cjne": {
             const [left, right, target] = ops;
@@ -704,33 +772,45 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
             if (left.type === "a" && right.type === "imm") {
                 const rel = relativeOffset(entry.address, 3, target.value);
                 if (rel == null)
-                    return fail("CJNE target is out of range.");
+                    return [0xb4, right.value, 0x02, 0x80, 0x03, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
                 return [0xb4, right.value, rel];
             }
             if (left.type === "a" && right.type === "direct") {
                 const rel = relativeOffset(entry.address, 3, target.value);
                 if (rel == null)
-                    return fail("CJNE target is out of range.");
+                    return [0xb5, right.value, 0x02, 0x80, 0x03, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
                 return [0xb5, right.value, rel];
             }
             if (left.type === "reg" && right.type === "imm") {
                 const rel = relativeOffset(entry.address, 3, target.value);
                 if (rel == null)
-                    return fail("CJNE target is out of range.");
+                    return [0xb8 + left.value, right.value, 0x02, 0x80, 0x03, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
                 return [0xb8 + left.value, right.value, rel];
             }
             if (left.type === "indirect" && right.type === "imm") {
                 const rel = relativeOffset(entry.address, 3, target.value);
                 if (rel == null)
-                    return fail("CJNE target is out of range.");
+                    return [0xb6 + left.value, right.value, 0x02, 0x80, 0x03, 0x02, (target.value >> 8) & 0xff, target.value & 0xff];
                 return [0xb6 + left.value, right.value, rel];
             }
             // Compatibility extension for snippets written as CJNE direct,#imm,label.
             // Real 8051 has no single opcode for this, so lower it through A.
             if (left.type === "direct" && right.type === "imm") {
                 const rel = relativeOffset(entry.address + 2, 3, target.value);
-                if (rel == null)
-                    return fail("CJNE target is out of range.");
+                if (rel == null) {
+                    return [
+                        0xe5,
+                        left.value,
+                        0xb4,
+                        right.value,
+                        0x02,
+                        0x80,
+                        0x03,
+                        0x02,
+                        (target.value >> 8) & 0xff,
+                        target.value & 0xff,
+                    ];
+                }
                 return [0xe5, left.value, 0xb4, right.value, rel];
             }
             return fail("Unsupported CJNE form.");
@@ -884,6 +964,24 @@ function operandHints(mnemonic, operands) {
 }
 function resolveValue(token, labels, equ) {
     const raw = token.trim();
+    const lowMatch = /^(?:low|lo)\s*\((.+)\)$/i.exec(raw);
+    if (lowMatch) {
+        const value = resolveValue(lowMatch[1], labels, equ);
+        return value == null ? null : value & 0xff;
+    }
+    const highMatch = /^(?:high|hi)\s*\((.+)\)$/i.exec(raw);
+    if (highMatch) {
+        const value = resolveValue(highMatch[1], labels, equ);
+        return value == null ? null : (value >> 8) & 0xff;
+    }
+    const arithmeticMatch = /^(.+?)([+-])\s*(0x[0-9a-f]+|[0-9a-f]+h|[01]+b|\d+)$/i.exec(raw);
+    if (arithmeticMatch) {
+        const left = resolveValue(arithmeticMatch[1], labels, equ);
+        const right = resolveNumber(arithmeticMatch[3], equ);
+        if (left != null && right != null) {
+            return arithmeticMatch[2] === "+" ? (left + right) & 0xffff : (left - right) & 0xffff;
+        }
+    }
     const lower = raw.toLowerCase();
     if (labels.has(lower))
         return labels.get(lower) ?? 0;

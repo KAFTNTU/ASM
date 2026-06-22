@@ -41,6 +41,9 @@ for (const file of files) {
 }
 
 copyFileSync(join(srcDir, "style.css"), join(outDir, "style.css"));
+if (existsSync(join(root, "public"))) {
+  copyTree(join(root, "public"), join(outDir, "public"));
+}
 
 console.log(`Exported plain JS app to ${outDir}`);
 
@@ -65,6 +68,23 @@ function patchJs(relPath, code) {
     patched = patched
       .replaceAll('"/samples/', '"./public/samples/')
       .replaceAll('"/sources/', '"./public/sources/');
+  }
+
+  if (relPath === join("ui", "motorPanel.ts")) {
+    patched = patched
+      .replace(
+        /from "three";/,
+        'from "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js";',
+      )
+      .replace(
+        /from "three\/examples\/jsm\/loaders\/GLTFLoader\.js";/,
+        'from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/loaders/GLTFLoader.js";',
+      )
+      .replace(
+        /from "three\/examples\/jsm\/controls\/OrbitControls\.js";/,
+        'from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/controls/OrbitControls.js";',
+      )
+      .replaceAll('"/models/28byj48.glb"', '"../public/models/28byj48.glb"');
   }
 
   if (relPath === "main.ts") {
@@ -94,4 +114,17 @@ function walk(dir) {
 
 function readDirSafe(dir) {
   return existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : [];
+}
+
+function copyTree(fromDir, toDir) {
+  mkdirSync(toDir, { recursive: true });
+  for (const entry of readDirSafe(fromDir)) {
+    const fromPath = join(fromDir, entry.name);
+    const toPath = join(toDir, entry.name);
+    if (entry.isDirectory()) {
+      copyTree(fromPath, toPath);
+      continue;
+    }
+    copyFileSync(fromPath, toPath);
+  }
 }

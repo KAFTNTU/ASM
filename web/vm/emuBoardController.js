@@ -2,54 +2,14 @@ import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm.js";
 import { SFR, ST841_MAP } from "./st841Map.js";
 export class EmuBoardController {
     constructor(board) {
-        Object.defineProperty(this, "board", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: board
-        });
-        Object.defineProperty(this, "emu", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: null
-        });
-        Object.defineProperty(this, "rafId", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 0
-        });
-        Object.defineProperty(this, "running", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: false
-        });
-        Object.defineProperty(this, "adcPending", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: null
-        });
-        Object.defineProperty(this, "instructions", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 0
-        });
-        Object.defineProperty(this, "batchSize", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: 184320
-        });
-        Object.defineProperty(this, "trace", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: []
-        });
+        this.board = board;
+        this.emu = null;
+        this.rafId = 0;
+        this.running = false;
+        this.adcPending = null;
+        this.instructions = 0;
+        this.batchSize = 184320;
+        this.trace = [];
     }
     async init() {
         if (!this.emu) {
@@ -186,6 +146,7 @@ export class EmuBoardController {
             return;
         this.serviceTimer0();
         this.serviceAdc();
+        this.servicePwm();
         const p3 = this.emu.getSfr(SFR.p3);
         this.board.applyCpuPorts({
             p0: this.emu.getSfr(SFR.p0),
@@ -205,6 +166,7 @@ export class EmuBoardController {
             p2: this.emu.getSfr(SFR.p2),
             p3: this.emu.getSfr(SFR.p3),
         });
+        this.serviceAudio();
     }
     serviceAdc() {
         if (!this.emu)
@@ -250,9 +212,9 @@ export class EmuBoardController {
     readAdcChannel(channel, joystick) {
         switch (channel & 0x0f) {
             case ST841_MAP.adc.xChannel:
-                return mapJoystickToLabLevel(joystick.x);
+                return mapJoystickToLabLevel(selectLabJoystickAxis(joystick.x, joystick.y));
             case ST841_MAP.adc.yChannel:
-                return mapJoystickToLabLevel(joystick.y);
+                return mapJoystickToLabLevel(selectLabJoystickAxis(joystick.y, joystick.x));
             case 0x00:
                 return joystick.x & 0x0fff;
             case 0x01:
@@ -271,19 +233,62 @@ export class EmuBoardController {
             this.trace.splice(0, this.trace.length - 400);
         }
     }
+    servicePwm() {
+        if (!this.emu)
+            return;
+        const motor = this.board.extraDevices.motor;
+        if (!motor || typeof motor.setPwmState !== "function")
+            return;
+        const pwmcon = this.emu.getSfr(SFR.pwmcon) & 0xff;
+        const pwm0 = ((this.emu.getSfr(SFR.pwm0h) & 0xff) << 8) |
+            (this.emu.getSfr(SFR.pwm0l) & 0xff);
+        const pwm1 = ((this.emu.getSfr(SFR.pwm1h) & 0xff) << 8) |
+            (this.emu.getSfr(SFR.pwm1l) & 0xff);
+        const singleOutputMasked = ((pwmcon >> 7) & 0x01) === 1;
+        const mode = (pwmcon >> 4) & 0x07;
+        const cdiv = (pwmcon >> 2) & 0x03;
+        const csel = pwmcon & 0x03;
+        const sourceClock = selectPwmClock(csel);
+        const divider = [1, 4, 16, 64][cdiv] ?? 1;
+        const countClock = sourceClock / divider;
+        const periodCounts = Math.max(0, pwm1 + 1);
+        const compareCounts = Math.max(0, Math.min(pwm0 + 1, periodCounts));
+        const duty = periodCounts > 0 ? Math.max(0, Math.min(1, compareCounts / periodCounts)) : 0;
+        const frequencyHz = periodCounts > 0 ? countClock / periodCounts : 0;
+        motor.setPwmState({
+            active: !singleOutputMasked && mode === 1 && periodCounts > 0 && duty > 0,
+            mode,
+            duty,
+            frequencyHz,
+            periodCounts,
+            compareCounts,
+            sourceLabel: pwmClockLabel(csel),
+            dividerLabel: `/ ${divider}`,
+        });
+    }
+    serviceAudio() {
+        if (!this.emu)
+            return;
+        const audio = this.board.extraDevices.audio;
+        if (!audio || typeof audio.setState !== "function")
+            return;
+        const p3 = this.emu.getSfr(SFR.p3) & 0xff;
+        const dac0 = ((this.emu.getSfr(0xfa) & 0x0f) << 8) |
+            (this.emu.getSfr(0xf9) & 0xff);
+        const dac1 = ((this.emu.getSfr(0xfc) & 0x0f) << 8) |
+            (this.emu.getSfr(0xfb) & 0xff);
+        audio.setState({
+            daccon: this.emu.getSfr(0xfd) & 0xff,
+            dac0,
+            dac1,
+            p34: ((p3 >> 4) & 1),
+            p35: ((p3 >> 5) & 1),
+            tick: this.instructions,
+        });
+    }
 }
-Object.defineProperty(EmuBoardController, "TIMER0_ACCEL", {
-    enumerable: true,
-    configurable: true,
-    writable: true,
-    value: 6
-});
-Object.defineProperty(EmuBoardController, "TRACE_SAMPLE_WHILE_RUN", {
-    enumerable: true,
-    configurable: true,
-    writable: true,
-    value: 64
-});
+EmuBoardController.TIMER0_ACCEL = 6;
+EmuBoardController.TRACE_SAMPLE_WHILE_RUN = 64;
 function mapJoystickToLabLevel(value) {
     // Lab 6 snippets compare THx against sparse values:
     // 01,03,05,07,09,0B,0C,0E,0F.
@@ -292,4 +297,44 @@ function mapJoystickToLabLevel(value) {
     const clamped = Math.max(0, Math.min(4095, value | 0));
     const idx = Math.round((clamped / 4095) * (levels.length - 1));
     return ((levels[idx] & 0x0f) << 8) | 0x80;
+}
+function selectLabJoystickAxis(primary, alternate) {
+    const primaryOffset = Math.abs((primary | 0) - 2048);
+    const alternateOffset = Math.abs((alternate | 0) - 2048);
+    // Many course snippets hard-code ADC6 or ADC7, but users may move the stick
+    // mostly along the other axis. If the requested axis is near center while the
+    // other one is clearly displaced, mirror the dominant movement so both styles
+    // of methodology code remain responsive in the simulator.
+    if (primaryOffset < 280 && alternateOffset > 420) {
+        return alternate;
+    }
+    return primary;
+}
+function selectPwmClock(csel) {
+    switch (csel & 0x03) {
+        case 0x00:
+            return 11059200 / 15;
+        case 0x01:
+            return 11059200;
+        case 0x02:
+            return 11059200;
+        case 0x03:
+            return 11059200;
+        default:
+            return 11059200;
+    }
+}
+function pwmClockLabel(csel) {
+    switch (csel & 0x03) {
+        case 0x00:
+            return "fXTAL / 15";
+        case 0x01:
+            return "fXTAL";
+        case 0x02:
+            return "T0 input";
+        case 0x03:
+            return "fVCO / fOSC";
+        default:
+            return "fXTAL";
+    }
 }

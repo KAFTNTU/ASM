@@ -1,11 +1,6 @@
 export class ScriptRunner {
     constructor() {
-        Object.defineProperty(this, "currentAbort", {
-            enumerable: true,
-            configurable: true,
-            writable: true,
-            value: null
-        });
+        this.currentAbort = null;
     }
     stop() {
         this.currentAbort?.abort();
