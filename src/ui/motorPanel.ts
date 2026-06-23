@@ -500,7 +500,7 @@ export function createMotorPanel(params: {
 
   const loader = new GLTFLoader();
   loader.load(
-    "/models/28byj48.glb",
+    "models/28byj48.glb",
     (gltf) => {
       const root = gltf.scene;
       root.traverse((child) => {

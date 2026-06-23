@@ -90,7 +90,7 @@ input {
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
   background: #1a2028;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .topBtn,
@@ -757,6 +757,7 @@ input {
 .fileMenuWrap {
   position: relative;
   flex: 0 0 auto;
+  z-index: 20;
 }
 
 .fileMenuBtn {

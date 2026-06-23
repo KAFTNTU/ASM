@@ -403,7 +403,7 @@ export function createMotorPanel(params) {
     window.addEventListener("pointerup", endResize);
     window.addEventListener("pointercancel", endResize);
     const loader = new GLTFLoader();
-    loader.load("../models/28byj48.glb", (gltf) => {
+    loader.load("models/28byj48.glb", (gltf) => {
         const root = gltf.scene;
         root.traverse((child) => {
             if (!(child instanceof THREE.Mesh))
