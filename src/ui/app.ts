@@ -9,7 +9,6 @@ import { PwmMotor } from "../vm/devices/pwmMotor";
 import { AudioCodec } from "../vm/devices/audioCodec";
 import { ST841_MAP } from "../vm/st841Map";
 import { renderStand } from "./standView";
-import { exampleScripts } from "./examples";
 
 export function createApp(root: HTMLDivElement): void {
   const board = new Board();
@@ -46,5 +45,5 @@ export function createApp(root: HTMLDivElement): void {
   board.extraDevices = { lcd, adc, keypad, sevenSeg, matrix, ledBar, motor, audio };
 
   root.innerHTML = "";
-  root.appendChild(renderStand({ board, exampleScripts }));
+  root.appendChild(renderStand({ board }));
 }

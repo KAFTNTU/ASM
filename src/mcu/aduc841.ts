@@ -1,0 +1,247 @@
+/**
+ * Canonical ADuC841 symbols shared by the assemblers, C51 front-end,
+ * simulator and editor. Addresses follow the ADuC841/842/843 Rev. B data
+ * sheet, Figure 27 (Special Function Register Locations).
+ */
+export const ADUC841_SFR = {
+  p0: 0x80,
+  sp: 0x81,
+  dpl: 0x82,
+  dph: 0x83,
+  dpp: 0x84,
+  pcon: 0x87,
+  tcon: 0x88,
+  tmod: 0x89,
+  tl0: 0x8a,
+  tl1: 0x8b,
+  th0: 0x8c,
+  th1: 0x8d,
+  p1: 0x90,
+  i2cadd1: 0x91,
+  i2cadd2: 0x92,
+  i2cadd3: 0x93,
+  scon: 0x98,
+  sbuf: 0x99,
+  i2cdat: 0x9a,
+  i2cadd: 0x9b,
+  t3fd: 0x9d,
+  t3con: 0x9e,
+  p2: 0xa0,
+  timecon: 0xa1,
+  hthsec: 0xa2,
+  sec: 0xa3,
+  min: 0xa4,
+  hour: 0xa5,
+  intval: 0xa6,
+  dpcon: 0xa7,
+  ie: 0xa8,
+  ieip2: 0xa9,
+  pwmcon: 0xae,
+  cfg841: 0xaf,
+  cfg842: 0xaf,
+  p3: 0xb0,
+  pwm0l: 0xb1,
+  pwm0h: 0xb2,
+  pwm1l: 0xb3,
+  pwm1h: 0xb4,
+  sph: 0xb7,
+  ip: 0xb8,
+  econ: 0xb9,
+  edata1: 0xbc,
+  edata2: 0xbd,
+  edata3: 0xbe,
+  edata4: 0xbf,
+  wdcon: 0xc0,
+  chipid: 0xc2,
+  eadrl: 0xc6,
+  eadrh: 0xc7,
+  t2con: 0xc8,
+  rcap2l: 0xca,
+  rcap2h: 0xcb,
+  tl2: 0xcc,
+  th2: 0xcd,
+  psw: 0xd0,
+  dmal: 0xd2,
+  dmah: 0xd3,
+  dmap: 0xd4,
+  pllcon: 0xd7,
+  adccon2: 0xd8,
+  adcon2: 0xd8,
+  adcdatal: 0xd9,
+  adcdatah: 0xda,
+  psmcon: 0xdf,
+  acc: 0xe0,
+  i2ccon: 0xe8,
+  adccon1: 0xef,
+  adcon1: 0xef,
+  b: 0xf0,
+  adcofsl: 0xf1,
+  adcofsh: 0xf2,
+  adcgainl: 0xf3,
+  adcgainh: 0xf4,
+  adccon3: 0xf5,
+  spidat: 0xf7,
+  spicon: 0xf8,
+  dac0l: 0xf9,
+  dac0h: 0xfa,
+  dac1l: 0xfb,
+  dac1h: 0xfc,
+  daccon: 0xfd,
+} as const;
+
+const PORT_BITS = Object.fromEntries(
+  ([0, 1, 2, 3] as const).flatMap((port) =>
+    Array.from({ length: 8 }, (_, bit) => [`p${port}_${bit}`, ADUC841_SFR[`p${port}`] + bit]),
+  ),
+) as Record<string, number>;
+
+const REGISTER_BITS = Object.fromEntries(
+  (["acc", "b"] as const).flatMap((register) =>
+    Array.from({ length: 8 }, (_, bit) => [`${register}_${bit}`, ADUC841_SFR[register] + bit]),
+  ),
+) as Record<string, number>;
+
+/** Bit-addressable aliases exposed by the built-in ADUC841.H model. */
+export const ADUC841_BITS: Readonly<Record<string, number>> = Object.freeze({
+  ...PORT_BITS,
+  ...REGISTER_BITS,
+
+  // Port 1 / Port 3 alternate functions.
+  t2: 0x90,
+  t2ex: 0x91,
+  rxd: 0xb0,
+  txd: 0xb1,
+  int0: 0xb2,
+  int1: 0xb3,
+  t0: 0xb4,
+  t1: 0xb5,
+  wr: 0xb6,
+  rd: 0xb7,
+
+  // TCON.
+  it0: 0x88,
+  ie0: 0x89,
+  it1: 0x8a,
+  ie1: 0x8b,
+  tr0: 0x8c,
+  tf0: 0x8d,
+  tr1: 0x8e,
+  tf1: 0x8f,
+
+  // SCON.
+  ri: 0x98,
+  ti: 0x99,
+  rb8: 0x9a,
+  tb8: 0x9b,
+  ren: 0x9c,
+  sm2: 0x9d,
+  sm1: 0x9e,
+  sm0: 0x9f,
+
+  // IE and IP. IEIP2 is not bit-addressable and is intentionally absent.
+  ex0: 0xa8,
+  et0: 0xa9,
+  ex1: 0xaa,
+  et1: 0xab,
+  es: 0xac,
+  et2: 0xad,
+  eadc: 0xae,
+  ea: 0xaf,
+  px0: 0xb8,
+  pt0: 0xb9,
+  px1: 0xba,
+  pt1: 0xbb,
+  ps: 0xbc,
+  pt2: 0xbd,
+  padc: 0xbe,
+
+  // Watchdog timer (WDCON).
+  wdwr: 0xc0,
+  wde: 0xc1,
+  wds: 0xc2,
+  wdir: 0xc3,
+  pre0: 0xc4,
+  pre1: 0xc5,
+  pre2: 0xc6,
+  pre3: 0xc7,
+
+  // Timer 2 (T2CON).
+  cap2: 0xc8,
+  cnt2: 0xc9,
+  tr2: 0xca,
+  exen2: 0xcb,
+  tclk: 0xcc,
+  rclk: 0xcd,
+  exf2: 0xce,
+  tf2: 0xcf,
+
+  // PSW.
+  p: 0xd0,
+  f1: 0xd1,
+  ov: 0xd2,
+  rs0: 0xd3,
+  rs1: 0xd4,
+  f0: 0xd5,
+  ac: 0xd6,
+  cy: 0xd7,
+
+  // ADCCON2.
+  cs0: 0xd8,
+  cs1: 0xd9,
+  cs2: 0xda,
+  cs3: 0xdb,
+  sconv: 0xdc,
+  cconv: 0xdd,
+  dma: 0xde,
+  adci: 0xdf,
+
+  // I2CCON.
+  i2ci: 0xe8,
+  i2ctx: 0xe9,
+  i2crs: 0xea,
+  i2cm: 0xeb,
+  i2cid0: 0xec,
+  mdi: 0xec,
+  i2cid1: 0xed,
+  mco: 0xed,
+  i2cgc: 0xee,
+  mde: 0xee,
+  i2csi: 0xef,
+  mdo: 0xef,
+
+  // SPICON.
+  spr0: 0xf8,
+  spr1: 0xf9,
+  cpha: 0xfa,
+  cpol: 0xfb,
+  spim: 0xfc,
+  spe: 0xfd,
+  wcol: 0xfe,
+  ispi: 0xff,
+});
+
+export const ADUC841_INTERRUPTS = [
+  { number: 0, vector: 0x0003, source: "IE0", description: "External interrupt 0" },
+  { number: 1, vector: 0x000b, source: "TF0", description: "Timer 0" },
+  { number: 2, vector: 0x0013, source: "IE1", description: "External interrupt 1" },
+  { number: 3, vector: 0x001b, source: "TF1", description: "Timer 1" },
+  { number: 4, vector: 0x0023, source: "RI/TI", description: "UART" },
+  { number: 5, vector: 0x002b, source: "TF2/EXF2", description: "Timer 2" },
+  { number: 6, vector: 0x0033, source: "ADCI", description: "ADC" },
+  { number: 7, vector: 0x003b, source: "ISPI/I2CI", description: "SPI or I2C" },
+  { number: 8, vector: 0x0043, source: "PSMI", description: "Power-supply monitor" },
+  { number: 10, vector: 0x0053, source: "TII", description: "Time interval counter" },
+  { number: 11, vector: 0x005b, source: "WDS", description: "Watchdog" },
+] as const;
+
+export const ADUC841_INTERRUPT_VECTORS = new Map<number, number>(
+  ADUC841_INTERRUPTS.map(({ number, vector }) => [number, vector]),
+);
+
+export function hex8(value: number): string {
+  return `0x${(value & 0xff).toString(16).padStart(2, "0").toUpperCase()}`;
+}
+
+export function hex16(value: number): string {
+  return `0x${(value & 0xffff).toString(16).padStart(4, "0").toUpperCase()}`;
+}

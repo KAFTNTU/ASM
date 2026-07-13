@@ -1,6 +1,7 @@
 import { Board } from "./board";
 import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm";
 import { SFR, ST841_MAP } from "./st841Map";
+import { ADUC841_MACHINE_CYCLE_HZ } from "./scopeRecorder";
 
 export class EmuBoardController {
   private emu: Emu8051Wasm | null = null;
@@ -8,6 +9,12 @@ export class EmuBoardController {
   private running = false;
   private adcPending: { channel: number; ticksLeft: number } | null = null;
   private instructions = 0;
+  private machineCycles = 0;
+  private pwmScopeActive = false;
+  private pwmScopeDuty = 0;
+  private pwmScopeFrequencyHz = 0;
+  private pwmScopeLastLevel: 0 | 1 = 0;
+  private lastAudioDac0 = -1;
   private batchSize = 184320;
   private static readonly TIMER0_ACCEL = 6;
   private static readonly TRACE_SAMPLE_WHILE_RUN = 64;
@@ -33,8 +40,16 @@ export class EmuBoardController {
     await this.init();
     this.stop();
     this.emu?.reset(true);
+    this.board.reset();
     this.adcPending = null;
     this.instructions = 0;
+    this.machineCycles = 0;
+    this.pwmScopeActive = false;
+    this.pwmScopeDuty = 0;
+    this.pwmScopeFrequencyHz = 0;
+    this.pwmScopeLastLevel = 0;
+    this.lastAudioDac0 = -1;
+    this.board.setSimulationCycle(0);
     this.trace = [];
     this.seedPorts();
     this.syncCpuToBoard();
@@ -57,6 +72,7 @@ export class EmuBoardController {
   step(instructions = 1): void {
     if (!this.emu) return;
     for (let index = 0; index < instructions; index++) {
+      this.board.setSimulationCycle(this.machineCycles);
       const pc = this.emu.getPC() & 0xffff;
       const opcode = this.emu.readCode(pc) & 0xff;
       const op1 = this.emu.readCode((pc + 1) & 0xffff) & 0xff;
@@ -67,6 +83,7 @@ export class EmuBoardController {
         const p3 = this.emu.getSfr(SFR.p3) & 0xff;
         this.board.applyCpuPorts({
           p0: this.emu.getSfr(SFR.p0) & 0xff,
+          p1: this.emu.getSfr(SFR.p1) & 0xff,
           p2: this.emu.getSfr(SFR.p2) & 0xff,
           p3,
         });
@@ -74,7 +91,10 @@ export class EmuBoardController {
           this.emu.setSfr(SFR.p0, this.board.readPort("P0"));
         }
       }
-      if (this.emu.tick()) {
+      const instructionStarted = this.emu.tick();
+      this.machineCycles += 1;
+      this.board.setSimulationCycle(this.machineCycles);
+      if (instructionStarted) {
         this.instructions += 1;
         const shouldTrace =
           !this.running ||
@@ -148,6 +168,14 @@ export class EmuBoardController {
     return this.instructions;
   }
 
+  getMachineCycleCount(): number {
+    return this.machineCycles;
+  }
+
+  getSimulationTimeSeconds(): number {
+    return this.machineCycles / ADUC841_MACHINE_CYCLE_HZ;
+  }
+
   getTrace(limit = 40): Array<{
     pc: number;
     opcode: number;
@@ -166,6 +194,7 @@ export class EmuBoardController {
 
   private seedPorts(): void {
     this.emu?.setSfr(SFR.p0, 0xff);
+    this.emu?.setSfr(SFR.p1, 0xff);
     // Real 8051 reset stack pointer.
     this.emu?.setSfr(SFR.sp, 0x07);
     this.emu?.setSfr(SFR.p2, 0x00);
@@ -185,6 +214,7 @@ export class EmuBoardController {
     const p3 = this.emu.getSfr(SFR.p3);
     this.board.applyCpuPorts({
       p0: this.emu.getSfr(SFR.p0),
+      p1: this.emu.getSfr(SFR.p1),
       p2: this.emu.getSfr(SFR.p2),
       p3,
     });
@@ -199,9 +229,11 @@ export class EmuBoardController {
     if (!this.emu) return;
     this.board.applyCpuPorts({
       p0: this.emu.getSfr(SFR.p0),
+      p1: this.emu.getSfr(SFR.p1),
       p2: this.emu.getSfr(SFR.p2),
       p3: this.emu.getSfr(SFR.p3),
     });
+    this.servicePwmScope();
     this.serviceAudio();
   }
 
@@ -327,6 +359,9 @@ export class EmuBoardController {
       sourceLabel: pwmClockLabel(csel),
       dividerLabel: `/ ${divider}`,
     });
+    this.pwmScopeActive = !singleOutputMasked && mode === 1 && periodCounts > 0 && duty > 0;
+    this.pwmScopeDuty = duty;
+    this.pwmScopeFrequencyHz = frequencyHz;
   }
 
   private serviceAudio(): void {
@@ -337,20 +372,36 @@ export class EmuBoardController {
 
     const p3 = this.emu.getSfr(SFR.p3) & 0xff;
     const dac0 =
-      ((this.emu.getSfr(0xfa) & 0x0f) << 8) |
-      (this.emu.getSfr(0xf9) & 0xff);
+      ((this.emu.getSfr(SFR.dac0h) & 0x0f) << 8) |
+      (this.emu.getSfr(SFR.dac0l) & 0xff);
     const dac1 =
-      ((this.emu.getSfr(0xfc) & 0x0f) << 8) |
-      (this.emu.getSfr(0xfb) & 0xff);
+      ((this.emu.getSfr(SFR.dac1h) & 0x0f) << 8) |
+      (this.emu.getSfr(SFR.dac1l) & 0xff);
 
     audio.setState({
-      daccon: this.emu.getSfr(0xfd) & 0xff,
+      daccon: this.emu.getSfr(SFR.daccon) & 0xff,
       dac0,
       dac1,
       p34: ((p3 >> 4) & 1) as 0 | 1,
       p35: ((p3 >> 5) & 1) as 0 | 1,
-      tick: this.instructions,
+      tick: this.machineCycles,
     });
+    if (dac0 !== this.lastAudioDac0) {
+      this.lastAudioDac0 = dac0;
+      this.board.scope.captureAnalog("audio", (dac0 / 4095) * 5, this.machineCycles);
+    }
+  }
+
+  private servicePwmScope(): void {
+    if (!this.board.scope.isCapturing("motor")) return;
+    let level: 0 | 1 = 0;
+    if (this.pwmScopeActive && this.pwmScopeFrequencyHz > 0 && this.pwmScopeDuty > 0) {
+      const phase = ((this.machineCycles * this.pwmScopeFrequencyHz) / ADUC841_MACHINE_CYCLE_HZ) % 1;
+      level = phase < this.pwmScopeDuty ? 1 : 0;
+    }
+    if (level === this.pwmScopeLastLevel) return;
+    this.pwmScopeLastLevel = level;
+    this.board.scope.captureDigital("motor", level, this.machineCycles);
   }
 }
 

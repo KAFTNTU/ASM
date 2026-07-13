@@ -64,12 +64,6 @@ function patchJs(relPath, code) {
     );
   }
 
-  if (relPath === join("ui", "cpuSamples.ts")) {
-    patched = patched
-      .replaceAll('"/samples/', '"./public/samples/')
-      .replaceAll('"/sources/', '"./public/sources/');
-  }
-
   if (relPath === join("ui", "motorPanel.ts")) {
     patched = patched
       .replace(
