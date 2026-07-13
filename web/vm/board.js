@@ -1,9 +1,13 @@
 import { PeripheralBus } from "./peripheralBus.js";
+import { ScopeRecorder } from "./scopeRecorder.js";
+import { ST841_MAP } from "./st841Map.js";
 export class Board {
     constructor() {
         this.bus = new PeripheralBus();
+        this.scope = new ScopeRecorder();
         this.ports = {
             P0: 0xff,
+            P1: 0xff,
             P2: 0x00,
             P3: 0xff,
         };
@@ -13,7 +17,8 @@ export class Board {
         this.keypadPressed = new Set();
     }
     reset() {
-        this.ports = { P0: 0xff, P2: 0x00, P3: 0xff };
+        this.scope.reset();
+        this.ports = { P0: 0xff, P1: 0xff, P2: 0x00, P3: 0xff };
         this.joystick = { x: 2048, y: 2048 };
         this.abortSignal = null;
         this.keypadPressed.clear();
@@ -25,9 +30,43 @@ export class Board {
                 device.clear();
             }
         }
+        this.captureAllPortBits();
+        this.refreshScopeDerivedSignals();
+        this.scope.captureAnalog("joystick", (this.joystick.x / 4095) * 5);
+        this.scope.captureDigital("motor", 0);
+        this.scope.captureAnalog("audio", 0);
+    }
+    setSimulationCycle(cycle) {
+        this.scope.setCycle(cycle);
     }
     setAbortSignal(signal) {
         this.abortSignal = signal;
+    }
+    setScopeCaptureSource(source) {
+        this.scope.setCaptureSources(source ? [source] : []);
+        if (!source)
+            return;
+        const pin = /^(P[0-3])\.([0-7])$/.exec(source);
+        if (pin) {
+            const port = pin[1];
+            const bit = Number(pin[2]);
+            this.scope.captureDigital(source, ((this.ports[port] >>> bit) & 1) === 1);
+            return;
+        }
+        if (source === "joystick") {
+            this.scope.captureAnalog(source, (this.joystick.x / 4095) * 5);
+            return;
+        }
+        if (source === "audio") {
+            const voltage = Number(this.extraDevices.audio?.getTelemetry?.().leftVolts ?? 0);
+            this.scope.captureAnalog(source, voltage);
+            return;
+        }
+        if (source === "motor") {
+            this.scope.captureDigital(source, 0);
+            return;
+        }
+        this.refreshScopeDerivedSignals();
     }
     formatHex8(v) {
         return "0x" + (v & 0xff).toString(16).padStart(2, "0").toUpperCase();
@@ -50,21 +89,26 @@ export class Board {
     }
     writePort(name, value) {
         const v = value & 0xff;
-        if (name === "P2") {
-            const prev = this.ports.P2 & 0xff;
-            this.ports.P2 = v;
-            // ST841 latch write: P2 transition ADR -> 0 in TX mode.
-            if (prev !== 0x00 && v === 0x00 && this.readBit("P3", 6) === 1) {
-                this.bus.write(prev, this.ports.P0 & 0xff);
-            }
+        const previous = this.ports[name] & 0xff;
+        if (previous === v)
             return;
-        }
         this.ports[name] = v;
+        this.captureChangedPortBits(name, previous, v);
+        if (name === "P2") {
+            // ST841 latch write: P2 transition ADR -> 0 in TX mode.
+            if (previous !== 0x00 && v === 0x00 && this.readBit("P3", 6) === 1) {
+                this.bus.write(previous, this.ports.P0 & 0xff);
+            }
+        }
+        if (name === "P2" || name === "P3") {
+            this.refreshScopeDerivedSignals();
+        }
     }
     applyCpuPorts(ports) {
-        // Keep write latch semantics centralized in writePort("P2", ...).
-        this.ports.P3 = ports.p3 & 0xff;
-        this.ports.P0 = ports.p0 & 0xff;
+        // Keep latch semantics and oscilloscope recording centralized in writePort().
+        this.writePort("P3", ports.p3 & 0xff);
+        this.writePort("P1", ports.p1 & 0xff);
+        this.writePort("P0", ports.p0 & 0xff);
         this.writePort("P2", ports.p2 & 0xff);
     }
     readBit(name, bit) {
@@ -74,7 +118,7 @@ export class Board {
     writeBit(name, bit, value) {
         const mask = 1 << bit;
         const cur = this.ports[name] & 0xff;
-        this.ports[name] = value ? cur | mask : cur & ~mask;
+        this.writePort(name, value ? cur | mask : cur & ~mask);
     }
     async delay(ms) {
         const clamped = Math.max(0, Math.min(60000, ms | 0));
@@ -97,6 +141,7 @@ export class Board {
         this.joystick.x = clamp(x);
         this.joystick.y = clamp(y);
         this.extraDevices.adc?.set(this.joystick.x, this.joystick.y);
+        this.scope.captureAnalog("joystick", (this.joystick.x / 4095) * 5);
     }
     getJoystick() {
         return { ...this.joystick };
@@ -128,6 +173,35 @@ export class Board {
             col3: (col3 ?? 0xff) & 0xff,
         };
     }
+    captureAllPortBits() {
+        for (const name of ["P0", "P1", "P2", "P3"]) {
+            const value = this.ports[name] & 0xff;
+            for (let bit = 0; bit < 8; bit += 1) {
+                this.scope.captureDigital(`${name}.${bit}`, ((value >>> bit) & 1) === 1);
+            }
+        }
+    }
+    captureChangedPortBits(name, previous, next) {
+        const changed = (previous ^ next) & 0xff;
+        for (let bit = 0; bit < 8; bit += 1) {
+            if (((changed >>> bit) & 1) === 0)
+                continue;
+            this.scope.captureDigital(`${name}.${bit}`, ((next >>> bit) & 1) === 1);
+        }
+    }
+    refreshScopeDerivedSignals() {
+        const address = this.ports.P2 & 0xff;
+        const txMode = this.readBit("P3", 6) === 1;
+        const rxMode = !txMode;
+        const writeSelected = txMode && address !== 0;
+        // General channel is the real peripheral address/write gate, not a template.
+        this.scope.captureDigital("general", writeSelected);
+        this.scope.captureDigital("sevenSeg", writeSelected && ST841_MAP.sevenSegAddrs.some((item) => item === address));
+        this.scope.captureDigital("ledBar", writeSelected && address === ST841_MAP.ledBarAddr);
+        this.scope.captureDigital("matrix", writeSelected && (address === ST841_MAP.matrixRowsAddr || address === ST841_MAP.matrixColsAddr));
+        this.scope.captureDigital("lcd", writeSelected && address === ST841_MAP.lcdAddr);
+        this.scope.captureDigital("keypad", rxMode && isKeypadAddress(address));
+    }
     getReadableKeys() {
         return new Set(this.keypadPressed);
     }
@@ -155,6 +229,15 @@ export class Board {
         this.extraDevices.lcd?.render(ctx, boardX + boardW - 306, boardY + 252);
         ctx.restore();
     }
+}
+function isKeypadAddress(address) {
+    const value = address & 0xff;
+    return (value === 0xef ||
+        value === 0xdf ||
+        value === 0xbf ||
+        value === 0x60 ||
+        value === 0x50 ||
+        value === 0x30);
 }
 function clamp(v) {
     return Math.max(0, Math.min(4095, v | 0));

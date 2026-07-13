@@ -405,6 +405,10 @@ function decodeLcdChar(code) {
     // Always show printable ASCII directly (digits/latin/punctuation).
     if (v >= 0x20 && v <= 0x7e)
         return String.fromCharCode(v);
+    // Legacy ST841 laboratory LCD ROM: the supplied methodology and the old
+    // stand encode lowercase Cyrillic "т" as 0xBF (nibbles B1h, F1h).
+    if (v === 0xbf)
+        return "\u0442";
     const mapped = LCD_CHAR_MAP[v];
     if (mapped)
         return mapped;

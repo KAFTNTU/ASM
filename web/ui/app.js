@@ -9,7 +9,6 @@ import { PwmMotor } from "../vm/devices/pwmMotor.js";
 import { AudioCodec } from "../vm/devices/audioCodec.js";
 import { ST841_MAP } from "../vm/st841Map.js";
 import { renderStand } from "./standView.js";
-import { exampleScripts } from "./examples.js";
 export function createApp(root) {
     const board = new Board();
     const ledBar = new LedBar();
@@ -40,5 +39,5 @@ export function createApp(root) {
     board.bus.registerReadProvider((addr, ctx) => keypad.read(addr, ctx.keypadPressed ?? new Set()));
     board.extraDevices = { lcd, adc, keypad, sevenSeg, matrix, ledBar, motor, audio };
     root.innerHTML = "";
-    root.appendChild(renderStand({ board, exampleScripts }));
+    root.appendChild(renderStand({ board }));
 }

@@ -1,3 +1,4 @@
+import { ADUC841_SFR } from "../mcu/aduc841.js";
 export const ST841_MAP = {
     ledBarAddr: 0x07,
     sevenSegAddrs: [0x01, 0x02, 0x03, 0x04],
@@ -20,34 +21,4 @@ export const ST841_MAP = {
         yChannel: 0x07,
     },
 };
-export const SFR = {
-    p0: 0x80,
-    sp: 0x81,
-    dpl: 0x82,
-    dph: 0x83,
-    p1: 0x90,
-    p2: 0xa0,
-    ie: 0xa8,
-    p3: 0xb0,
-    ip: 0xb8,
-    tcon: 0x88,
-    tmod: 0x89,
-    tl0: 0x8a,
-    tl1: 0x8b,
-    th0: 0x8c,
-    th1: 0x8d,
-    scon: 0x98,
-    sbuf: 0x99,
-    pwmcon: 0xd7,
-    psw: 0xd0,
-    adcon2: 0xd8,
-    adcdatal: 0xd9,
-    adcdatah: 0xda,
-    acc: 0xe0,
-    adcon1: 0xef,
-    pwm0l: 0xfa,
-    pwm0h: 0xfb,
-    pwm1l: 0xfc,
-    pwm1h: 0xfd,
-    b: 0xf0,
-};
+export const SFR = ADUC841_SFR;

@@ -1,6 +1,7 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/controls/OrbitControls.js";
+import { cloneScopeSignal, drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js";
 const FIXED_SHAFT_OFFSET = new THREE.Vector3(-0.082, -0.048, 0.032);
 const FIXED_SHAFT_ROTATION = new THREE.Euler(3.316126, -4.712389, -0.174533, "XYZ");
 export function createMotorPanel(params) {
@@ -48,12 +49,6 @@ export function createMotorPanel(params) {
     audioTop.textContent = "Audio subsystem";
     const audioSub = el("div", { class: "audioViewportHint" });
     audioSub.textContent = "TLV320AIC1109 / DAC0 / DAC1 / mic / phones";
-    const audioDemoButtons = el("div", { class: "audioDemoButtons" });
-    const audioAsmBtn = createScopePushButton("ASM demo");
-    const audioCBtn = createScopePushButton("C demo");
-    audioAsmBtn.classList.add("motorViewBtn");
-    audioCBtn.classList.add("motorViewBtn");
-    audioDemoButtons.append(audioAsmBtn, audioCBtn);
     const audioMeters = el("div", { class: "audioMeters" });
     const micMeter = createAudioMeter("Microphone");
     const speakerMeter = createAudioMeter("Speaker");
@@ -66,7 +61,7 @@ export function createMotorPanel(params) {
     micControl.append(micLabel, micSlider);
     const audioRoute = el("div", { class: "audioRoute mono" });
     audioRoute.textContent = "Route: DAC0 / DAC1 direct";
-    audioViewportCard.append(audioTop, audioSub, audioDemoButtons, audioMeters, micControl, audioRoute);
+    audioViewportCard.append(audioTop, audioSub, audioMeters, micControl, audioRoute);
     const side = el("div", { class: "motorSide" });
     const stats = el("section", { class: "motorInfoCard" });
     const statsTitle = el("h3");
@@ -78,19 +73,39 @@ export function createMotorPanel(params) {
     const scopeTitleBar = el("div", { class: "scopeWindowCaption" });
     const scopeCaptionLeft = el("div", { class: "scopeCaptionLeft" });
     const scopeTitle = el("span", { class: "scopeWindowTitle" });
-    scopeTitle.textContent = "Oscilloscope";
-    const scopeSourcePicker = el("select", { class: "scopeSourcePicker", title: "Signal source" });
-    for (const source of ["general", "motor", "audio", "sevenSeg", "ledBar", "matrix", "joystick", "keypad", "lcd"]) {
+    scopeTitle.textContent = "Осцилограф";
+    const scopeSourcePicker = el("select", { class: "scopeSourcePicker", title: "Джерело сигналу" });
+    const primaryPinGroup = document.createElement("optgroup");
+    primaryPinGroup.label = "Основні піни стенда (P0/P1/P2/P3.0/P3.1/P3.6)";
+    const otherPinGroup = document.createElement("optgroup");
+    otherPinGroup.label = "Інші піни ADuC841";
+    const primaryPins = new Set([
+        ...Array.from({ length: 8 }, (_, bit) => `P0.${bit}`),
+        ...Array.from({ length: 8 }, (_, bit) => `P1.${bit}`),
+        ...Array.from({ length: 8 }, (_, bit) => `P2.${bit}`),
+        "P3.0",
+        "P3.1",
+        "P3.6",
+    ]);
+    const auxiliaryOptions = [];
+    for (const source of scopeSourceOptions()) {
         const item = document.createElement("option");
         item.value = source;
         item.textContent = scopeSourceLabel(source);
-        scopeSourcePicker.appendChild(item);
+        if (/^P[0-3]\.[0-7]$/.test(source)) {
+            (primaryPins.has(source) ? primaryPinGroup : otherPinGroup).appendChild(item);
+        }
+        else {
+            auxiliaryOptions.push(item);
+        }
     }
+    // Keep the original order: virtual signals first, then the pin groups.
+    scopeSourcePicker.append(...auxiliaryOptions, primaryPinGroup, otherPinGroup);
     scopeCaptionLeft.append(scopeTitle, scopeSourcePicker);
     const scopeCaptionActions = el("div", { class: "scopeCaptionActions" });
-    const scopeRunBtn = createScopePushButton("Stop");
+    const scopeRunBtn = createScopePushButton("Стоп");
     scopeRunBtn.classList.add("scopeRunBtn", "active");
-    const scopeCloseBtn = el("button", { class: "scopeCaptionClose", type: "button", title: "Close" });
+    const scopeCloseBtn = el("button", { class: "scopeCaptionClose", type: "button", title: "Закрити" });
     scopeCloseBtn.textContent = "\u00d7";
     scopeCaptionActions.append(scopeRunBtn, scopeCloseBtn);
     scopeTitleBar.append(scopeCaptionLeft, scopeCaptionActions);
@@ -114,7 +129,7 @@ export function createMotorPanel(params) {
     const scopeReadoutTable = el("table", { class: "scopeReadoutTable multisimReadoutTable" });
     scopeReadoutTable.innerHTML = `
     <thead>
-      <tr><th></th><th>Time</th><th>Channel_A</th></tr>
+      <tr><th></th><th>Час</th><th>Канал A</th></tr>
     </thead>
     <tbody>
       <tr><td>T1</td><td>0.000 s</td><td>0.000 V</td></tr>
@@ -124,11 +139,11 @@ export function createMotorPanel(params) {
   `;
     scopeReadout.appendChild(scopeReadoutTable);
     const scopeUtility = el("div", { class: "scopeUtilityPanel" });
-    const reverseBtn = createScopeActionButton("Reverse");
-    const saveBtn = createScopeActionButton("Save");
+    const reverseBtn = createScopeActionButton("Реверс");
+    const saveBtn = createScopeActionButton("Зберегти");
     const extTriggerRow = el("label", { class: "scopeExtTriggerRow" });
     const extTriggerText = el("span");
-    extTriggerText.textContent = "Ext. trigger";
+    extTriggerText.textContent = "Зовнішній тригер";
     const extTriggerDot = el("span", { class: "scopeRadioDot" });
     extTriggerRow.append(extTriggerText, extTriggerDot);
     scopeUtility.append(reverseBtn, saveBtn, extTriggerRow);
@@ -138,7 +153,7 @@ export function createMotorPanel(params) {
     const timePosSpinner = createSpinnerControl("0");
     const voltsSpinner = createSpinnerControl("5 V/Div");
     const yPosSpinner = createSpinnerControl("0");
-    const triggerLevelSpinner = createSpinnerControl("0", "small");
+    const triggerLevelSpinner = createSpinnerControl("2.5", "small");
     const modeButtons = [createScopePushButton("Y/T"), createScopePushButton("Add")];
     const couplingButtons = [createScopePushButton("AC"), createScopePushButton("0"), createScopePushButton("DC")];
     const triggerEdgeButtons = [
@@ -151,22 +166,22 @@ export function createMotorPanel(params) {
     ];
     const triggerButtons = [...triggerEdgeButtons, ...triggerSourceButtons];
     const triggerModeButtons = [
-        createScopePushButton("Single"),
-        createScopePushButton("Normal"),
-        createScopePushButton("Auto"),
-        createScopePushButton("None"),
+        createScopePushButton("Одноразовий"),
+        createScopePushButton("Нормальний"),
+        createScopePushButton("Авто"),
+        createScopePushButton("Вимкнено"),
     ];
-    scopeControlStrip.append(createControlGroup("Timebase", [
-        createControlLine("Scale:", timeScaleSpinner.root),
-        createControlLine("X pos.(Div):", timePosSpinner.root),
+    scopeControlStrip.append(createControlGroup("Розгортка часу", [
+        createControlLine("Масштаб:", timeScaleSpinner.root),
+        createControlLine("Позиція X (поділ.):", timePosSpinner.root),
         createButtonRow(modeButtons),
-    ]), createControlGroup("Channel A", [
-        createControlLine("Scale:", voltsSpinner.root),
-        createControlLine("Y pos.(Div):", yPosSpinner.root),
+    ]), createControlGroup("Канал A", [
+        createControlLine("Масштаб:", voltsSpinner.root),
+        createControlLine("Позиція Y (поділ.):", yPosSpinner.root),
         createButtonRow(couplingButtons),
-    ]), createControlGroup("Trigger", [
-        createControlLine("Edge:", createTinyRow(triggerButtons)),
-        createControlLine("Level:", createLevelRow(triggerLevelSpinner.root)),
+    ]), createControlGroup("Тригер", [
+        createControlLine("Фронт:", createTinyRow(triggerButtons)),
+        createControlLine("Рівень:", createLevelRow(triggerLevelSpinner.root)),
         createButtonRow(triggerModeButtons),
     ]));
     scopeDrawer.append(scopeTitleBar, scopeCanvas, scopeInfoRow, scopeControlStrip, stats);
@@ -241,7 +256,6 @@ export function createMotorPanel(params) {
     let scopeOpen = false;
     let loaded = false;
     let resizeObserver = null;
-    let scopePhaseSeconds = 0;
     let timebaseIndex = Math.max(0, timebaseOptions.findIndex((option) => option.value === 1e-2));
     let voltsIndex = Math.max(0, voltsOptions.findIndex((value) => value === 5));
     let scopePanDivs = 0;
@@ -249,10 +263,10 @@ export function createMotorPanel(params) {
     let cursorT1Div = 1;
     let cursorT2Div = 3;
     let reverseWave = false;
-    let triggerLevelVolts = 0;
+    let triggerLevelVolts = 2.5;
     let scopeRunning = true;
-    let frozenTelemetry = null;
-    let frozenAnalogVoltage = null;
+    let frozenScopeSignal = null;
+    let singleArmTimeSeconds = 0;
     let showAverage = false;
     let couplingMode = "DC";
     let triggerEdge = "rising";
@@ -265,8 +279,6 @@ export function createMotorPanel(params) {
     micSlider.addEventListener("input", () => {
         audio?.setMicLevel?.((Number(micSlider.value) || 0) / 100);
     });
-    audioAsmBtn.addEventListener("click", () => params.onLoadAudioAsm?.());
-    audioCBtn.addEventListener("click", () => params.onLoadAudioC?.());
     setActiveButton(modeButtons, modeButtons[0]);
     setActiveButton(couplingButtons, couplingButtons[2]);
     setActiveButton(triggerEdgeButtons, triggerEdgeButtons[0]);
@@ -335,6 +347,9 @@ export function createMotorPanel(params) {
     scopeRunBtn.addEventListener("click", () => {
         scopeRunning = !scopeRunning;
         singleArmed = scopeRunning && triggerMode === "Single";
+        if (singleArmed) {
+            singleArmTimeSeconds = params.getScopeSignal?.(activeScopeSource)?.nowSeconds ?? 0;
+        }
         syncScopeRunButton();
     });
     modeButtons.forEach((btn, index) => {
@@ -369,6 +384,7 @@ export function createMotorPanel(params) {
             if (triggerMode === "Single") {
                 scopeRunning = true;
                 singleArmed = true;
+                singleArmTimeSeconds = params.getScopeSignal?.(activeScopeSource)?.nowSeconds ?? 0;
                 syncScopeRunButton();
             }
             else {
@@ -511,6 +527,7 @@ export function createMotorPanel(params) {
     }
     function openPanel(source, scopeOnly) {
         activeScopeSource = source;
+        params.setScopeCaptureSource?.(source);
         shell.classList.toggle("scope-only", scopeOnly);
         modal.classList.toggle("scope-only-mode", scopeOnly);
         scopeOpen = scopeOnly || scopeOpen;
@@ -518,7 +535,8 @@ export function createMotorPanel(params) {
         triggerMode = "None";
         singleArmed = false;
         setActiveButton(triggerModeButtons, triggerModeButtons[3]);
-        frozenTelemetry = null;
+        frozenScopeSignal = null;
+        singleArmTimeSeconds = params.getScopeSignal?.(source)?.nowSeconds ?? 0;
         scopeRunning = true;
         opened = true;
         syncScopeRunButton();
@@ -529,6 +547,7 @@ export function createMotorPanel(params) {
     }
     function close() {
         opened = false;
+        params.setScopeCaptureSource?.(null);
         activeResize = null;
         document.body.classList.remove("panel-resizing");
         modal.classList.add("hidden");
@@ -537,44 +556,27 @@ export function createMotorPanel(params) {
         return opened;
     }
     function renderFrame(dtSeconds) {
+        void dtSeconds;
+        if (!opened)
+            return;
         const liveTelemetry = motor.getTelemetry();
         const audioTelemetry = audio?.getTelemetry?.() ?? null;
-        const externalSignal = activeScopeSource === "motor"
-            ? null
-            : params.getScopeSignal?.(activeScopeSource) ?? null;
-        const observedTelemetry = externalSignal
-            ? {
-                ...liveTelemetry,
-                active: externalSignal.active,
-                duty: externalSignal.duty,
-                frequencyHz: externalSignal.frequencyHz,
-                currentRpm: 0,
-                targetRpm: 0,
-                periodCounts: 0,
-                compareCounts: 0,
-                modeLabel: scopeSourceLabel(activeScopeSource),
-            }
-            : liveTelemetry;
-        const liveAnalogVoltage = externalSignal?.analogVoltage ?? null;
+        const liveScopeSignal = params.getScopeSignal?.(activeScopeSource) ?? emptyScopeSignal(activeScopeSource);
         shaftSpin.rotation.set(liveTelemetry.angleRad, 0, 0);
         shaftMount.rotation.copy(FIXED_SHAFT_ROTATION);
         shaftMount.position.set(shaftBasePosition.x + FIXED_SHAFT_OFFSET.x, shaftBasePosition.y + FIXED_SHAFT_OFFSET.y, shaftBasePosition.z + FIXED_SHAFT_OFFSET.z);
         if (scopeRunning) {
-            scopePhaseSeconds += dtSeconds;
-            frozenTelemetry = { ...observedTelemetry };
-            frozenAnalogVoltage = liveAnalogVoltage;
+            frozenScopeSignal = cloneScopeSignal(liveScopeSignal);
         }
-        if (scopeRunning &&
-            singleArmed &&
-            isTriggerAvailable(observedTelemetry, reverseWave, couplingMode, triggerLevelVolts, triggerSource, liveAnalogVoltage)) {
-            frozenTelemetry = { ...observedTelemetry };
-            frozenAnalogVoltage = liveAnalogVoltage;
+        const singleTriggered = triggerSource === "Ext" ||
+            hasTriggerEdge(liveScopeSignal, triggerEdge, triggerLevelVolts, singleArmTimeSeconds);
+        if (scopeRunning && singleArmed && singleTriggered) {
+            frozenScopeSignal = cloneScopeSignal(liveScopeSignal);
             scopeRunning = false;
             singleArmed = false;
             syncScopeRunButton();
         }
-        const scopeTelemetry = scopeRunning ? observedTelemetry : (frozenTelemetry ?? observedTelemetry);
-        const scopeAnalogVoltage = scopeRunning ? liveAnalogVoltage : frozenAnalogVoltage;
+        const scopeSignal = scopeRunning ? liveScopeSignal : (frozenScopeSignal ?? liveScopeSignal);
         if (activeScopeSource === "audio" && audioTelemetry) {
             drawAudioStats(statsGrid, audioTelemetry);
             statsTitle.textContent = "Audio parameters";
@@ -586,14 +588,23 @@ export function createMotorPanel(params) {
             setAudioMeterLevel(phonesMeter.fill, audioTelemetry.phonesLevel);
             audioRoute.textContent = `Route: ${audioTelemetry.routeLabel}`;
         }
-        else {
+        else if (activeScopeSource === "motor") {
             drawStats(statsGrid, liveTelemetry);
-            statsTitle.textContent = "Parameters";
+            statsTitle.textContent = "Motor parameters";
             title.textContent = "\u0414\u0432\u0438\u0433\u0443\u043d 28BYJ-48 - \u043a\u0440\u043e\u043a\u043e\u0432\u0438\u0439";
             setAudioMeterLevel(micMeter.fill, 0);
             setAudioMeterLevel(speakerMeter.fill, 0);
             setAudioMeterLevel(phonesMeter.fill, 0);
             audioRoute.textContent = "Route: DAC0 / DAC1 direct";
+        }
+        else {
+            drawScopeSignalStats(statsGrid, liveScopeSignal);
+            statsTitle.textContent = "Signal parameters";
+            title.textContent = `Осцилограф — ${scopeSourceLabel(activeScopeSource)}`;
+            setAudioMeterLevel(micMeter.fill, 0);
+            setAudioMeterLevel(speakerMeter.fill, 0);
+            setAudioMeterLevel(phonesMeter.fill, 0);
+            audioRoute.textContent = `Джерело: ${scopeSourceLabel(activeScopeSource)}`;
         }
         const timebaseDivSeconds = timebaseOptions[timebaseIndex]?.value ?? 1e-2;
         const voltsDiv = voltsOptions[voltsIndex] ?? 5;
@@ -603,8 +614,7 @@ export function createMotorPanel(params) {
         voltsSpinner.valueNode.textContent = `${voltsDiv} V/Div`;
         yPosSpinner.valueNode.textContent = formatPlainDiv(scopeYOffsetDivs);
         triggerLevelSpinner.valueNode.textContent = `${triggerLevelVolts.toFixed(1)}`;
-        drawScope(scopeCanvas, scopeTelemetry, {
-            elapsedSeconds: scopePhaseSeconds,
+        drawRecordedScope(scopeCanvas, scopeSignal, {
             signalColor: "#ff3b12",
             timebaseDivSeconds,
             voltsDiv,
@@ -619,21 +629,19 @@ export function createMotorPanel(params) {
             triggerSource,
             triggerMode,
             triggerLevelVolts,
-            analogVoltage: scopeAnalogVoltage,
         });
-        updateScopeReadout(scopeReadoutTable, scopeTelemetry, {
+        updateRecordedScopeReadout(scopeReadoutTable, scopeSignal, {
             timebaseDivSeconds,
             scopePanSeconds,
-            voltsDiv,
-            scopeYOffsetDivs,
             reverseWave,
             cursorT1Div,
             cursorT2Div,
             couplingMode,
-            analogVoltage: scopeAnalogVoltage,
+            triggerEdge,
+            triggerSource,
+            triggerMode,
+            triggerLevelVolts,
         });
-        if (!opened)
-            return;
         controls.autoRotate = false;
         controls.update();
         if (activeScopeSource === "audio") {
@@ -641,11 +649,14 @@ export function createMotorPanel(params) {
                 ? `Frequency ${audioTelemetry.frequencyHz.toFixed(0)} Hz | Peak ${Math.round(audioTelemetry.peak * 100)}%`
                 : "Audio subsystem";
         }
-        else {
+        else if (activeScopeSource === "motor") {
             viewportHint.textContent = loaded
                 ? `Speed ${Math.round(liveTelemetry.currentRpm)} rpm | PWM ${Math.round(liveTelemetry.duty * 100)}%`
                 : "Loading model...";
             renderer.render(scene, camera);
+        }
+        else {
+            viewportHint.textContent = `${scopeSourceLabel(activeScopeSource)} | ${liveScopeSignal.currentVoltage.toFixed(3)} V`;
         }
     }
     function syncScopeState() {
@@ -658,7 +669,7 @@ export function createMotorPanel(params) {
         applyPanelWidths();
     }
     function syncScopeRunButton() {
-        scopeRunBtn.textContent = scopeRunning ? "Stop" : "Start";
+        scopeRunBtn.textContent = scopeRunning ? "Стоп" : "Старт";
         scopeRunBtn.classList.toggle("active", scopeRunning);
     }
     function ensureResizeObserver() {
@@ -735,28 +746,6 @@ export function createMotorPanel(params) {
         renderFrame,
     };
 }
-function updateScopeReadout(table, telemetry, params) {
-    const body = table.tBodies[0];
-    if (!body)
-        return;
-    const t1Time = params.scopePanSeconds + params.cursorT1Div * params.timebaseDivSeconds;
-    const t2Time = params.scopePanSeconds + params.cursorT2Div * params.timebaseDivSeconds;
-    const t1Voltage = sampleVoltageAtTime(telemetry, t1Time, params.reverseWave, params.couplingMode, params.analogVoltage);
-    const t2Voltage = sampleVoltageAtTime(telemetry, t2Time, params.reverseWave, params.couplingMode, params.analogVoltage);
-    const rows = [
-        ["T1", `${t1Time.toFixed(3)} s`, `${t1Voltage.toFixed(3)} V`],
-        ["T2", `${t2Time.toFixed(3)} s`, `${t2Voltage.toFixed(3)} V`],
-        ["T2-T1", `${(t2Time - t1Time).toFixed(3)} s`, `${(t2Voltage - t1Voltage).toFixed(3)} V`],
-    ];
-    Array.from(body.rows).forEach((row, rowIndex) => {
-        const values = rows[rowIndex];
-        if (!values)
-            return;
-        Array.from(row.cells).forEach((cell, cellIndex) => {
-            cell.textContent = values[cellIndex] ?? "";
-        });
-    });
-}
 function createAudioMeter(label) {
     const root = el("div", { class: "audioMeter" });
     const title = el("div", { class: "audioMeterTitle" });
@@ -794,196 +783,72 @@ function drawAudioStats(target, telemetry) {
     </div>
   `;
 }
-function drawScope(canvas, telemetry, params) {
-    const ctx = canvas.getContext("2d");
-    if (!ctx)
-        return;
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = "rgba(255,255,255,0.12)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 10; i++) {
-        const x = (i / 10) * w;
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, h);
-        ctx.stroke();
-    }
-    for (let i = 0; i <= 8; i++) {
-        const y = (i / 8) * h;
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-        ctx.stroke();
-    }
-    const centerY = h * 0.5;
-    ctx.strokeStyle = "rgba(255,255,255,0.42)";
-    ctx.lineWidth = 1.25;
-    ctx.beginPath();
-    ctx.moveTo(0, centerY);
-    ctx.lineTo(w, centerY);
-    ctx.stroke();
-    const zeroY = h * 0.5 - params.scopeYOffsetDivs * (h / 8);
-    ctx.strokeStyle = "rgba(255,255,255,0.22)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, zeroY);
-    ctx.lineTo(w, zeroY);
-    ctx.stroke();
-    const triggerReady = isTriggerAvailable(telemetry, params.reverseWave, params.couplingMode, params.triggerLevelVolts, params.triggerSource, params.analogVoltage);
-    if ((params.triggerMode === "Normal" || params.triggerMode === "Single") && !triggerReady) {
-        ctx.fillStyle = "rgba(255,255,255,0.72)";
-        ctx.font = "11px monospace";
-        ctx.fillText("WAITING FOR TRIGGER", 10, 18);
-        drawCursorLine(ctx, w, h, params.cursorT1Div, "#ffffff");
-        drawCursorLine(ctx, w, h, params.cursorT2Div, "#b4c8ff");
-        return;
-    }
-    const avgVoltage = sampleAverageVoltage(telemetry, params.reverseWave, params.couplingMode, params.analogVoltage);
-    const avgY = zeroY - ((avgVoltage / Math.max(0.2, params.voltsDiv)) * (h / 8));
-    if (params.showAverage) {
-        ctx.strokeStyle = "rgba(236, 213, 110, 0.85)";
-        ctx.setLineDash([6, 5]);
-        ctx.beginPath();
-        ctx.moveTo(0, avgY);
-        ctx.lineTo(w, avgY);
-        ctx.stroke();
-        ctx.setLineDash([]);
-    }
-    ctx.shadowColor = params.signalColor;
-    ctx.shadowBlur = 7;
-    ctx.strokeStyle = params.signalColor;
-    ctx.lineWidth = 2;
-    const totalTime = params.timebaseDivSeconds * 10;
-    let startTime = params.elapsedSeconds + params.scopePanSeconds;
-    if (params.triggerMode !== "None" && triggerReady) {
-        const edgePhase = params.reverseWave
-            ? (params.triggerEdge === "rising" ? telemetry.duty : 0)
-            : (params.triggerEdge === "rising" ? 0 : telemetry.duty);
-        const edgeTime = params.triggerSource === "A" && telemetry.frequencyHz > 0
-            ? edgePhase / telemetry.frequencyHz
-            : 0;
-        startTime = params.triggerMode === "Single"
-            ? edgeTime + params.scopePanSeconds
-            : edgeTime + params.scopePanSeconds - totalTime * 0.2;
-    }
-    const periodPixels = telemetry.frequencyHz > 0
-        ? w / Math.max(1, telemetry.frequencyHz * totalTime)
-        : Number.POSITIVE_INFINITY;
-    if (periodPixels < 1.5 && telemetry.active && params.couplingMode !== "GND") {
-        const lowVoltage = sampleVoltageLevel(telemetry, false, params.reverseWave, params.couplingMode);
-        const highVoltage = sampleVoltageLevel(telemetry, true, params.reverseWave, params.couplingMode);
-        const lowY = zeroY - ((lowVoltage / Math.max(0.2, params.voltsDiv)) * (h / 8));
-        const highY = zeroY - ((highVoltage / Math.max(0.2, params.voltsDiv)) * (h / 8));
-        ctx.fillStyle = `${params.signalColor}42`;
-        ctx.fillRect(1, Math.min(lowY, highY), w - 2, Math.abs(highY - lowY));
-        ctx.beginPath();
-        ctx.moveTo(1, lowY);
-        ctx.lineTo(w - 1, lowY);
-        ctx.moveTo(1, highY);
-        ctx.lineTo(w - 1, highY);
-        ctx.stroke();
-    }
-    else {
-        ctx.beginPath();
-        const sampleCount = clamp(Math.ceil(w * 3), 900, 5000);
-        let previousY = 0;
-        for (let index = 0; index < sampleCount; index++) {
-            const fraction = index / Math.max(1, sampleCount - 1);
-            const x = fraction * (w - 2) + 1;
-            const timeAtSample = startTime + fraction * totalTime;
-            const sampleVoltage = sampleVoltageAtTime(telemetry, timeAtSample, params.reverseWave, params.couplingMode, params.analogVoltage);
-            const y = zeroY - ((sampleVoltage / Math.max(0.2, params.voltsDiv)) * (h / 8));
-            if (index === 0) {
-                ctx.moveTo(x, y);
-            }
-            else {
-                if (Math.abs(y - previousY) > 0.01)
-                    ctx.lineTo(x, previousY);
-                ctx.lineTo(x, y);
-            }
-            previousY = y;
-        }
-        ctx.stroke();
-    }
-    ctx.shadowBlur = 0;
-    drawCursorLine(ctx, w, h, params.cursorT1Div, "#ffffff");
-    drawCursorLine(ctx, w, h, params.cursorT2Div, "#b4c8ff");
+function drawScopeSignalStats(target, signal) {
+    const state = signal.currentVoltage >= 2.5 ? "HIGH" : signal.currentVoltage <= 0.05 ? "LOW" : "analog";
+    target.innerHTML = `
+    <div class="motorStatTiles">
+      ${statTile("State", state)}
+      ${statTile("Voltage", `${signal.currentVoltage.toFixed(3)} V`)}
+      ${statTile("Frequency", signal.frequencyHz > 0 ? `${signal.frequencyHz.toFixed(1)} Hz` : "-")}
+      ${statTile("High time", `${Math.round(signal.duty * 100)}%`)}
+      ${statTile("Events", `${signal.samples.length}`)}
+      ${statTile("Simulation", formatScopeTime(signal.nowSeconds))}
+    </div>
+  `;
 }
-function drawCursorLine(ctx, width, height, divPosition, color) {
-    const x = (divPosition / 10) * width;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
-    ctx.setLineDash([]);
-}
-function sampleAverageVoltage(telemetry, reverseWave, couplingMode = "DC", analogVoltage = null) {
-    if (analogVoltage != null) {
-        return couplingMode === "DC" ? (reverseWave ? -analogVoltage : analogVoltage) : 0;
-    }
-    if (couplingMode !== "DC")
-        return 0;
-    const base = telemetry.duty * 5;
-    return reverseWave ? -base : base;
-}
-function sampleVoltageLevel(telemetry, high, reverseWave, couplingMode) {
-    if (couplingMode === "GND")
-        return 0;
-    const signedVoltage = reverseWave ? (high ? -5 : 0) : (high ? 5 : 0);
-    if (couplingMode === "AC") {
-        const signedAverage = (reverseWave ? -1 : 1) * telemetry.duty * 5;
-        return signedVoltage - signedAverage;
-    }
-    return signedVoltage;
-}
-function sampleVoltageAtTime(telemetry, timeSeconds, reverseWave, couplingMode = "DC", analogVoltage = null) {
-    if (analogVoltage != null) {
-        if (couplingMode !== "DC")
-            return 0;
-        return reverseWave ? -analogVoltage : analogVoltage;
-    }
-    if (!telemetry.active || telemetry.duty <= 0 || telemetry.frequencyHz <= 0) {
-        return 0;
-    }
-    const phase = (timeSeconds * telemetry.frequencyHz) % 1;
-    return sampleVoltageLevel(telemetry, phase < telemetry.duty, reverseWave, couplingMode);
-}
-function isTriggerAvailable(telemetry, reverseWave, couplingMode, triggerLevelVolts, triggerSource, analogVoltage = null) {
-    if (analogVoltage != null) {
-        return triggerSource === "Ext";
-    }
-    if (!telemetry.active || telemetry.frequencyHz <= 0 || telemetry.duty <= 0)
-        return false;
-    if (triggerSource === "Ext")
-        return true;
-    if (couplingMode === "GND" || telemetry.duty >= 1)
-        return false;
-    const low = sampleVoltageLevel(telemetry, false, reverseWave, couplingMode);
-    const high = sampleVoltageLevel(telemetry, true, reverseWave, couplingMode);
-    return triggerLevelVolts >= Math.min(low, high) && triggerLevelVolts <= Math.max(low, high);
+function formatScopeTime(seconds) {
+    if (Math.abs(seconds) < 1e-3)
+        return `${(seconds * 1e6).toFixed(1)} us`;
+    if (Math.abs(seconds) < 1)
+        return `${(seconds * 1e3).toFixed(3)} ms`;
+    return `${seconds.toFixed(3)} s`;
 }
 function formatPlainDiv(value) {
     return Number.isInteger(value) ? `${value}` : value.toFixed(2);
 }
+function scopeSourceOptions() {
+    const sources = [
+        "general",
+        "motor",
+        "audio",
+        "sevenSeg",
+        "ledBar",
+        "matrix",
+        "joystick",
+        "keypad",
+        "lcd",
+    ];
+    for (const port of [0, 1, 2, 3]) {
+        for (const bit of [0, 1, 2, 3, 4, 5, 6, 7]) {
+            sources.push(`P${port}.${bit}`);
+        }
+    }
+    return sources;
+}
 function scopeSourceLabel(source) {
-    return {
-        general: "General",
-        motor: "Motor PWM",
-        audio: "Audio PCM",
-        sevenSeg: "7-segment display",
-        ledBar: "LED bar",
-        matrix: "LED matrix 5x7",
-        joystick: "Joystick X",
-        keypad: "Keypad",
-        lcd: "LCD",
-    }[source];
+    if (/^P[0-3]\.[0-7]$/.test(source))
+        return `${source} — пін`;
+    switch (source) {
+        case "general":
+            return "General";
+        case "motor":
+            return "Motor PWM";
+        case "audio":
+            return "Audio PCM";
+        case "sevenSeg":
+            return "7-segment display";
+        case "ledBar":
+            return "LED bar";
+        case "matrix":
+            return "LED matrix 5x7";
+        case "joystick":
+            return "Joystick X";
+        case "keypad":
+            return "Keypad";
+        case "lcd":
+            return "LCD";
+    }
+    return source;
 }
 function createScopeActionButton(label) {
     const btn = el("button", { class: "scopeActionBtn", type: "button" });
