@@ -16,6 +16,8 @@ export class EmuBoardController {
         this.pwmScopeLastLevel = 0;
         this.lastAudioDac0 = -1;
         this.batchSize = 184320;
+        this.portLatches = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
+        this.preTickEffective = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
         this.trace = [];
     }
     async init() {
@@ -39,6 +41,8 @@ export class EmuBoardController {
         this.lastAudioDac0 = -1;
         this.board.setSimulationCycle(0);
         this.trace = [];
+        this.portLatches = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
+        this.preTickEffective = { ...this.portLatches };
         this.seedPorts();
         this.syncCpuToBoard();
     }
@@ -163,6 +167,8 @@ export class EmuBoardController {
         this.emu?.setSfr(SFR.sp, 0x07);
         this.emu?.setSfr(SFR.p2, 0x00);
         this.emu?.setSfr(SFR.p3, 0xff);
+        this.portLatches = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
+        this.preTickEffective = { ...this.portLatches };
         this.emu?.setSfr(ST841_MAP.adc.adcon1, 0x00);
         this.emu?.setSfr(ST841_MAP.adc.adcon2, 0x00);
         this.emu?.setSfr(ST841_MAP.adc.dataLow, 0x00);
@@ -174,27 +180,45 @@ export class EmuBoardController {
         this.serviceTimer0();
         this.serviceAdc();
         this.servicePwm();
-        const p3 = this.emu.getSfr(SFR.p3);
-        this.board.applyCpuPorts({
-            p0: this.emu.getSfr(SFR.p0),
-            p1: this.emu.getSfr(SFR.p1),
-            p2: this.emu.getSfr(SFR.p2),
-            p3,
-        });
-        // In RX mode the keypad / future peripherals drive P0.
-        if (((p3 >> 6) & 1) === 0) {
+        // Preserve MCU output latches separately from externally driven pin levels.
+        this.board.applyCpuPorts(this.portLatches);
+        this.preTickEffective = {
+            p0: this.board.readPort("P0"),
+            p1: this.board.readPort("P1"),
+            p2: this.board.readPort("P2"),
+            p3: this.board.readPort("P3"),
+        };
+        this.emu.setSfr(SFR.p0, this.preTickEffective.p0);
+        this.emu.setSfr(SFR.p1, this.preTickEffective.p1);
+        this.emu.setSfr(SFR.p2, this.preTickEffective.p2);
+        this.emu.setSfr(SFR.p3, this.preTickEffective.p3);
+        // In RX mode the keypad / future peripherals can additionally drive P0.
+        if (((this.preTickEffective.p3 >> 6) & 1) === 0) {
             this.emu.setSfr(SFR.p0, this.board.readPort("P0"));
+            this.preTickEffective.p0 = this.emu.getSfr(SFR.p0) & 0xff;
         }
     }
     syncCpuToBoard() {
         if (!this.emu)
             return;
-        this.board.applyCpuPorts({
-            p0: this.emu.getSfr(SFR.p0),
-            p1: this.emu.getSfr(SFR.p1),
-            p2: this.emu.getSfr(SFR.p2),
-            p3: this.emu.getSfr(SFR.p3),
-        });
+        const after = {
+            p0: this.emu.getSfr(SFR.p0) & 0xff,
+            p1: this.emu.getSfr(SFR.p1) & 0xff,
+            p2: this.emu.getSfr(SFR.p2) & 0xff,
+            p3: this.emu.getSfr(SFR.p3) & 0xff,
+        };
+        // If a value still equals the externally resolved level, assume the
+        // instruction did not rewrite that port and retain the previous latch.
+        // A changed value is a CPU port write and becomes the new latch.
+        for (const name of ["p0", "p1", "p2", "p3"]) {
+            if (after[name] !== this.preTickEffective[name])
+                this.portLatches[name] = after[name];
+        }
+        this.emu.setSfr(SFR.p0, this.portLatches.p0);
+        this.emu.setSfr(SFR.p1, this.portLatches.p1);
+        this.emu.setSfr(SFR.p2, this.portLatches.p2);
+        this.emu.setSfr(SFR.p3, this.portLatches.p3);
+        this.board.applyCpuPorts(this.portLatches);
         this.servicePwmScope();
         this.serviceAudio();
     }
@@ -324,8 +348,6 @@ export class EmuBoardController {
         }
     }
     servicePwmScope() {
-        if (!this.board.scope.isCapturing("motor"))
-            return;
         let level = 0;
         if (this.pwmScopeActive && this.pwmScopeFrequencyHz > 0 && this.pwmScopeDuty > 0) {
             const phase = ((this.machineCycles * this.pwmScopeFrequencyHz) / ADUC841_MACHINE_CYCLE_HZ) % 1;

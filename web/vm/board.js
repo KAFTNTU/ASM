@@ -11,6 +11,10 @@ export class Board {
             P2: 0x00,
             P3: 0xff,
         };
+        // Optional external digital drivers used by the logic-schematic editor.
+        // A set mask bit means that an external circuit is actively driving that pin.
+        this.externalDriveMask = { P0: 0, P1: 0, P2: 0, P3: 0 };
+        this.externalDriveValue = { P0: 0, P1: 0, P2: 0, P3: 0 };
         this.abortSignal = null;
         this.extraDevices = {};
         this.joystick = { x: 2048, y: 2048 };
@@ -19,6 +23,8 @@ export class Board {
     reset() {
         this.scope.reset();
         this.ports = { P0: 0xff, P1: 0xff, P2: 0x00, P3: 0xff };
+        this.externalDriveMask = { P0: 0, P1: 0, P2: 0, P3: 0 };
+        this.externalDriveValue = { P0: 0, P1: 0, P2: 0, P3: 0 };
         this.joystick = { x: 2048, y: 2048 };
         this.abortSignal = null;
         this.keypadPressed.clear();
@@ -42,32 +48,6 @@ export class Board {
     setAbortSignal(signal) {
         this.abortSignal = signal;
     }
-    setScopeCaptureSource(source) {
-        this.scope.setCaptureSources(source ? [source] : []);
-        if (!source)
-            return;
-        const pin = /^(P[0-3])\.([0-7])$/.exec(source);
-        if (pin) {
-            const port = pin[1];
-            const bit = Number(pin[2]);
-            this.scope.captureDigital(source, ((this.ports[port] >>> bit) & 1) === 1);
-            return;
-        }
-        if (source === "joystick") {
-            this.scope.captureAnalog(source, (this.joystick.x / 4095) * 5);
-            return;
-        }
-        if (source === "audio") {
-            const voltage = Number(this.extraDevices.audio?.getTelemetry?.().leftVolts ?? 0);
-            this.scope.captureAnalog(source, voltage);
-            return;
-        }
-        if (source === "motor") {
-            this.scope.captureDigital(source, 0);
-            return;
-        }
-        this.refreshScopeDerivedSignals();
-    }
     formatHex8(v) {
         return "0x" + (v & 0xff).toString(16).padStart(2, "0").toUpperCase();
     }
@@ -79,10 +59,10 @@ export class Board {
                     joystick: this.joystick,
                     keypadPressed: this.getReadableKeys(),
                 });
-                return busVal == null ? 0xff : busVal & 0xff;
+                return this.applyExternalDrive(name, busVal == null ? 0xff : busVal & 0xff);
             }
         }
-        return this.ports[name] & 0xff;
+        return this.applyExternalDrive(name, this.ports[name] & 0xff);
     }
     getPortRaw(name) {
         return this.ports[name] & 0xff;
@@ -112,8 +92,30 @@ export class Board {
         this.writePort("P2", ports.p2 & 0xff);
     }
     readBit(name, bit) {
-        const v = (this.ports[name] >>> bit) & 1;
+        const v = (this.readPort(name) >>> bit) & 1;
         return (v ? 1 : 0);
+    }
+    setExternalDigitalDrive(name, bit, value) {
+        if (bit < 0 || bit > 7)
+            return;
+        const mask = 1 << bit;
+        if (value == null) {
+            this.externalDriveMask[name] &= ~mask;
+        }
+        else {
+            this.externalDriveMask[name] |= mask;
+            if (value)
+                this.externalDriveValue[name] |= mask;
+            else
+                this.externalDriveValue[name] &= ~mask;
+        }
+        this.captureEffectivePortBit(name, bit);
+    }
+    getExternalDigitalDrive(name, bit) {
+        const mask = 1 << bit;
+        if ((this.externalDriveMask[name] & mask) === 0)
+            return null;
+        return (this.externalDriveValue[name] & mask) !== 0 ? 1 : 0;
     }
     writeBit(name, bit, value) {
         const mask = 1 << bit;
@@ -172,6 +174,16 @@ export class Board {
             col2: (col2 ?? 0xff) & 0xff,
             col3: (col3 ?? 0xff) & 0xff,
         };
+    }
+    applyExternalDrive(name, latchValue) {
+        const mask = this.externalDriveMask[name] & 0xff;
+        const external = this.externalDriveValue[name] & 0xff;
+        // 8051 GPIO is quasi-bidirectional: an externally driven low always wins;
+        // a driven high cannot force a pin high while the MCU latch drives it low.
+        return (latchValue & (~mask | external)) & 0xff;
+    }
+    captureEffectivePortBit(name, bit) {
+        this.scope.captureDigital(`${name}.${bit}`, this.readBit(name, bit) === 1);
     }
     captureAllPortBits() {
         for (const name of ["P0", "P1", "P2", "P3"]) {

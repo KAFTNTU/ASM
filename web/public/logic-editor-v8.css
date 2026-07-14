@@ -1,0 +1,353 @@
+/* Logic editor v8: compact Multisim-style workspace and editable routing. */
+.logicEditorShell {
+  grid-template-rows: 30px 30px 72px auto minmax(0, 1fr);
+  background: #abb4bf;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.logicEditorModal:fullscreen,
+.logicEditorModal.isFullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #abb4bf;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.logicEditorShell *,
+.logicEditorModal * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.logicEditorShell input,
+.logicEditorShell textarea,
+.logicEditorShell select,
+.logicEditorModal input,
+.logicEditorModal textarea,
+.logicEditorModal select {
+  user-select: auto;
+  -webkit-user-select: auto;
+}
+
+.logicWindowTitle {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.logicWindowFullscreen {
+  width: 30px;
+  height: 26px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #39414b;
+  cursor: pointer;
+}
+
+.logicWindowFullscreen:hover {
+  background: #bfccdb;
+  color: #1f4f82;
+}
+
+.logicTitlebar {
+  background: linear-gradient(#c3cad3, #9fa9b5);
+}
+
+.logicMenuBar {
+  background: #c1c9d3;
+}
+
+.logicMainToolbar {
+  gap: 4px;
+  padding: 3px 3px 4px;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  background: linear-gradient(#c0c8d2, #a8b2be);
+}
+
+.logicMenuBar {
+  align-items: center;
+}
+
+.logicMenuActionSpacer {
+  flex: 1 1 auto;
+}
+
+.logicMenuBar .logicToolbarButton.iconOnly {
+  width: 34px;
+  min-width: 34px;
+  height: 26px;
+  padding: 0;
+  margin-left: 3px;
+  grid-template-rows: 1fr;
+}
+
+.logicMenuBar .logicToolbarButton.iconOnly .logicToolIcon {
+  min-width: 26px;
+  min-height: 22px;
+  font-size: 15px;
+  border-color: #8d97a3;
+  background: #dfe4ea;
+}
+
+.logicToolbarSpacer {
+  min-width: 8px;
+}
+
+.logicToolbarButton,
+.logicToolbarButton.compact {
+  min-width: 40px;
+  height: 44px;
+  padding: 2px;
+}
+
+.logicToolbarButton.iconOnly {
+  width: 40px;
+  min-width: 40px;
+  grid-template-rows: 1fr;
+}
+
+.logicToolbarButton.iconOnly .logicToolLabel {
+  display: none;
+}
+
+.logicToolbarButton.iconOnly .logicToolIcon {
+  min-width: 30px;
+  min-height: 30px;
+  border-color: #8d97a3;
+  background: #dfe4ea;
+}
+
+.logicToolbarDivider {
+  flex: 0 0 1px;
+  align-self: stretch;
+  margin: 3px;
+  background: #929ba6;
+  box-shadow: 1px 0 rgba(255, 255, 255, .7);
+}
+
+.logicComponentToolButton {
+  flex: 0 0 55px;
+  width: 55px;
+  height: 64px;
+  display: grid;
+  grid-template-rows: 39px 21px;
+  place-items: center;
+  padding: 1px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #25313d;
+  cursor: pointer;
+}
+
+.logicComponentToolButton:hover {
+  border-color: #87929f;
+  background: rgba(255, 255, 255, .42);
+}
+
+.logicComponentToolButton.active {
+  border-color: #5c91ce;
+  background: #bfd8f4;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .8);
+}
+
+.logicComponentToolPreview {
+  width: 51px;
+  height: 39px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.logicComponentToolPreview .logicComponentLabel,
+.logicComponentToolPreview .logicPinLabel,
+.logicComponentToolPreview .logicPinName,
+.logicComponentToolPreview .logicSelectionBox {
+  display: none;
+}
+
+.logicComponentToolLabel {
+  max-width: 53px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 13px;
+  font-weight: 700;
+}
+
+.logicBreadcrumb {
+  display: flex;
+}
+
+.logicBreadcrumb.hidden,
+.logicPropertiesPopover.hidden {
+  display: none !important;
+}
+
+.logicCanvasArea {
+  margin: 3px;
+  background: #aeb8c4;
+}
+
+.logicCanvasArea svg,
+.logicCanvasArea text,
+.logicCanvasArea tspan {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+}
+
+.logicStatusbar {
+  display: none;
+}
+
+.logicEmptyHint {
+  display: none !important;
+}
+
+.logicPropertiesPopover {
+  position: fixed;
+  z-index: 1238;
+  width: 270px;
+  max-height: min(420px, 78vh);
+  overflow: auto;
+  border: 1px solid #929ca7;
+  border-radius: 7px;
+  background: #f4f6f8;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .3);
+}
+
+.logicPropertiesPopover .logicPropertiesPanel {
+  display: block;
+  padding: 10px;
+  background: #f4f6f8;
+}
+
+.logicWirePalette {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.logicWirePalette button {
+  height: 24px;
+  border: 2px solid #f7f8fa;
+  border-radius: 4px;
+  outline: 1px solid #9da6b0;
+  cursor: pointer;
+}
+
+.logicWirePalette button:hover {
+  transform: translateY(-1px);
+  outline-color: #3279c4;
+}
+
+.logicMarquee {
+  fill: rgba(49, 124, 205, .12);
+  stroke: #317ccd;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.logicBlockDetail,
+.logicClockWave,
+.logicLedRays,
+.logicChipNotch {
+  fill: none;
+  stroke: #35414e;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.logicBlockFine {
+  fill: none;
+  stroke: #66727e;
+  stroke-width: 1.25;
+  pointer-events: none;
+}
+
+.logicBlockNode {
+  fill: #35414e;
+  pointer-events: none;
+}
+
+.logicBlockCaption {
+  fill: #475463;
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.logicBlockTiny {
+  fill: #34404c;
+  font-size: 8px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.logicAdderSymbol {
+  fill: #1f2c38;
+  font-family: Georgia, serif;
+  font-size: 31px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.logicCounterCell {
+  fill: #edf2f7;
+  stroke: #596674;
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.logicPinGroup.wireTarget.valid .logicPin {
+  fill: #58bf78;
+  stroke: #14713a;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 4px rgba(44, 174, 91, .85));
+}
+
+.logicPinGroup.wireTarget.invalid .logicPin {
+  fill: #ef6b64;
+  stroke: #a51f1f;
+  stroke-width: 3;
+  filter: drop-shadow(0 0 4px rgba(214, 49, 49, .75));
+}
+
+.logicWire,
+.logicWirePreview {
+  stroke: #15191e;
+}
+
+.logicWire.conflict {
+  stroke: #d74242;
+}
+
+.logicWireHandle {
+  fill: #f9fbfd;
+  stroke: #266fb9;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  cursor: move;
+}
+
+.logicWireHandle:hover {
+  fill: #cfe5fb;
+  stroke: #174f88;
+}
+
+@media (max-width: 900px) {
+  .logicEditorShell {
+    grid-template-rows: 34px 28px 70px auto minmax(0, 1fr);
+  }
+}

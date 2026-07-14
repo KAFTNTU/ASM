@@ -13,10 +13,6 @@ export class ScopeRecorder {
     constructor() {
         this.cycle = 0;
         this.traces = new Map();
-        // null keeps the recorder compatible with standalone/tests (capture all).
-        // The UI supplies an empty set while the scope is closed and exactly one
-        // source while it is open, avoiding 32 simultaneous pin histories.
-        this.captureSources = null;
     }
     reset() {
         this.cycle = 0;
@@ -31,12 +27,6 @@ export class ScopeRecorder {
     getNowSeconds() {
         return this.cycle / ADUC841_MACHINE_CYCLE_HZ;
     }
-    setCaptureSources(sources) {
-        this.captureSources = sources == null ? null : new Set(Array.from(sources, String));
-    }
-    isCapturing(source) {
-        return this.captureSources == null || this.captureSources.has(String(source));
-    }
     captureDigital(source, level, cycle = this.cycle) {
         this.captureVoltage(source, level ? 5 : 0, cycle);
     }
@@ -45,8 +35,6 @@ export class ScopeRecorder {
     }
     captureVoltage(source, voltage, cycle = this.cycle) {
         const key = String(source);
-        if (!this.isCapturing(key))
-            return;
         const timeSeconds = Math.max(0, cycle) / ADUC841_MACHINE_CYCLE_HZ;
         const value = Number.isFinite(voltage) ? voltage : 0;
         let samples = this.traces.get(key);

@@ -21,7 +21,8 @@
     "test:runtime:run": "node ./scripts/test-compiler-runtime.mjs",
     "test:runtime": "npm run export:web && npm run test:runtime:run",
     "test:compilers": "npm run export:web && npm run test:asm:run && npm run test:c51:run && npm run test:language:run && npm run test:hints && npm run test:runtime:run",
-    "test": "npm run test:compilers && npm run test:scope"
+    "test": "npm run test:compilers && npm run test:scope && npm run test:logic",
+    "test:logic": "npm run export:web && node ./scripts/test-logic-circuits.mjs && node ./scripts/test-logic-routing.mjs"
   },
   "keywords": [],
   "author": "",

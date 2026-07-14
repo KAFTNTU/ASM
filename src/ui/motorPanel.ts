@@ -59,7 +59,6 @@ export function createMotorPanel(params: {
   motor: PwmMotor;
   audio?: AudioCodec;
   getScopeSignal?(source: ScopeSource): ScopeSignal;
-  setScopeCaptureSource?(source: ScopeSource | null): void;
 }): MotorPanelController {
   const { motor, audio } = params;
 
@@ -134,38 +133,19 @@ export function createMotorPanel(params: {
   const scopeTitleBar = el("div", { class: "scopeWindowCaption" });
   const scopeCaptionLeft = el("div", { class: "scopeCaptionLeft" });
   const scopeTitle = el("span", { class: "scopeWindowTitle" });
-  scopeTitle.textContent = "Осцилограф";
-  const scopeSourcePicker = el("select", { class: "scopeSourcePicker", title: "Джерело сигналу" }) as HTMLSelectElement;
-  const primaryPinGroup = document.createElement("optgroup");
-  primaryPinGroup.label = "Основні піни стенда (P0/P1/P2/P3.0/P3.1/P3.6)";
-  const otherPinGroup = document.createElement("optgroup");
-  otherPinGroup.label = "Інші піни ADuC841";
-  const primaryPins = new Set<string>([
-    ...Array.from({ length: 8 }, (_, bit) => `P0.${bit}`),
-    ...Array.from({ length: 8 }, (_, bit) => `P1.${bit}`),
-    ...Array.from({ length: 8 }, (_, bit) => `P2.${bit}`),
-    "P3.0",
-    "P3.1",
-    "P3.6",
-  ]);
-  const auxiliaryOptions: HTMLOptionElement[] = [];
+  scopeTitle.textContent = "Oscilloscope";
+  const scopeSourcePicker = el("select", { class: "scopeSourcePicker", title: "Signal source" }) as HTMLSelectElement;
   for (const source of scopeSourceOptions()) {
     const item = document.createElement("option");
     item.value = source;
     item.textContent = scopeSourceLabel(source);
-    if (/^P[0-3]\.[0-7]$/.test(source)) {
-      (primaryPins.has(source) ? primaryPinGroup : otherPinGroup).appendChild(item);
-    } else {
-      auxiliaryOptions.push(item);
-    }
+    scopeSourcePicker.appendChild(item);
   }
-  // Keep the original order: virtual signals first, then the pin groups.
-  scopeSourcePicker.append(...auxiliaryOptions, primaryPinGroup, otherPinGroup);
   scopeCaptionLeft.append(scopeTitle, scopeSourcePicker);
   const scopeCaptionActions = el("div", { class: "scopeCaptionActions" });
-  const scopeRunBtn = createScopePushButton("Стоп");
+  const scopeRunBtn = createScopePushButton("Stop");
   scopeRunBtn.classList.add("scopeRunBtn", "active");
-  const scopeCloseBtn = el("button", { class: "scopeCaptionClose", type: "button", title: "Закрити" }) as HTMLButtonElement;
+  const scopeCloseBtn = el("button", { class: "scopeCaptionClose", type: "button", title: "Close" }) as HTMLButtonElement;
   scopeCloseBtn.textContent = "\u00d7";
   scopeCaptionActions.append(scopeRunBtn, scopeCloseBtn);
   scopeTitleBar.append(scopeCaptionLeft, scopeCaptionActions);
@@ -196,7 +176,7 @@ export function createMotorPanel(params: {
   const scopeReadoutTable = el("table", { class: "scopeReadoutTable multisimReadoutTable" });
   scopeReadoutTable.innerHTML = `
     <thead>
-      <tr><th></th><th>Час</th><th>Канал A</th></tr>
+      <tr><th></th><th>Time</th><th>Channel_A</th></tr>
     </thead>
     <tbody>
       <tr><td>T1</td><td>0.000 s</td><td>0.000 V</td></tr>
@@ -207,11 +187,11 @@ export function createMotorPanel(params: {
   scopeReadout.appendChild(scopeReadoutTable);
 
   const scopeUtility = el("div", { class: "scopeUtilityPanel" });
-  const reverseBtn = createScopeActionButton("Реверс");
-  const saveBtn = createScopeActionButton("Зберегти");
+  const reverseBtn = createScopeActionButton("Reverse");
+  const saveBtn = createScopeActionButton("Save");
   const extTriggerRow = el("label", { class: "scopeExtTriggerRow" });
   const extTriggerText = el("span");
-  extTriggerText.textContent = "Зовнішній тригер";
+  extTriggerText.textContent = "Ext. trigger";
   const extTriggerDot = el("span", { class: "scopeRadioDot" });
   extTriggerRow.append(extTriggerText, extTriggerDot);
   scopeUtility.append(reverseBtn, saveBtn, extTriggerRow);
@@ -236,26 +216,26 @@ export function createMotorPanel(params: {
   ];
   const triggerButtons = [...triggerEdgeButtons, ...triggerSourceButtons];
   const triggerModeButtons = [
-    createScopePushButton("Одноразовий"),
-    createScopePushButton("Нормальний"),
-    createScopePushButton("Авто"),
-    createScopePushButton("Вимкнено"),
+    createScopePushButton("Single"),
+    createScopePushButton("Normal"),
+    createScopePushButton("Auto"),
+    createScopePushButton("None"),
   ];
 
   scopeControlStrip.append(
-    createControlGroup("Розгортка часу", [
-      createControlLine("Масштаб:", timeScaleSpinner.root),
-      createControlLine("Позиція X (поділ.):", timePosSpinner.root),
+    createControlGroup("Timebase", [
+      createControlLine("Scale:", timeScaleSpinner.root),
+      createControlLine("X pos.(Div):", timePosSpinner.root),
       createButtonRow(modeButtons),
     ]),
-    createControlGroup("Канал A", [
-      createControlLine("Масштаб:", voltsSpinner.root),
-      createControlLine("Позиція Y (поділ.):", yPosSpinner.root),
+    createControlGroup("Channel A", [
+      createControlLine("Scale:", voltsSpinner.root),
+      createControlLine("Y pos.(Div):", yPosSpinner.root),
       createButtonRow(couplingButtons),
     ]),
-    createControlGroup("Тригер", [
-      createControlLine("Фронт:", createTinyRow(triggerButtons)),
-      createControlLine("Рівень:", createLevelRow(triggerLevelSpinner.root)),
+    createControlGroup("Trigger", [
+      createControlLine("Edge:", createTinyRow(triggerButtons)),
+      createControlLine("Level:", createLevelRow(triggerLevelSpinner.root)),
       createButtonRow(triggerModeButtons),
     ]),
   );
@@ -658,7 +638,6 @@ export function createMotorPanel(params: {
 
   function openPanel(source: ScopeSource, scopeOnly: boolean): void {
     activeScopeSource = source;
-    params.setScopeCaptureSource?.(source);
     shell.classList.toggle("scope-only", scopeOnly);
     modal.classList.toggle("scope-only-mode", scopeOnly);
     scopeOpen = scopeOnly || scopeOpen;
@@ -679,7 +658,6 @@ export function createMotorPanel(params: {
 
   function close(): void {
     opened = false;
-    params.setScopeCaptureSource?.(null);
     activeResize = null;
     document.body.classList.remove("panel-resizing");
     modal.classList.add("hidden");
@@ -736,11 +714,11 @@ export function createMotorPanel(params: {
     } else {
       drawScopeSignalStats(statsGrid, liveScopeSignal);
       statsTitle.textContent = "Signal parameters";
-      title.textContent = `Осцилограф — ${scopeSourceLabel(activeScopeSource)}`;
+      title.textContent = `Oscilloscope - ${scopeSourceLabel(activeScopeSource)}`;
       setAudioMeterLevel(micMeter.fill, 0);
       setAudioMeterLevel(speakerMeter.fill, 0);
       setAudioMeterLevel(phonesMeter.fill, 0);
-      audioRoute.textContent = `Джерело: ${scopeSourceLabel(activeScopeSource)}`;
+      audioRoute.textContent = `Source: ${scopeSourceLabel(activeScopeSource)}`;
     }
 
     const timebaseDivSeconds = timebaseOptions[timebaseIndex]?.value ?? 1e-2;
@@ -809,7 +787,7 @@ export function createMotorPanel(params: {
   }
 
   function syncScopeRunButton(): void {
-    scopeRunBtn.textContent = scopeRunning ? "Стоп" : "Старт";
+    scopeRunBtn.textContent = scopeRunning ? "Stop" : "Start";
     scopeRunBtn.classList.toggle("active", scopeRunning);
   }
 
@@ -980,26 +958,26 @@ function scopeSourceOptions(): ScopeSource[] {
 }
 
 function scopeSourceLabel(source: ScopeSource): string {
-  if (/^P[0-3]\.[0-7]$/.test(source)) return `${source} — пін`;
+  if (/^P[0-3]\.[0-7]$/.test(source)) return `${source} pin`;
   switch (source) {
     case "general":
-      return "General";
+      return "Peripheral write gate";
     case "motor":
-      return "Motor PWM";
+      return "Motor PWM output";
     case "audio":
-      return "Audio PCM";
+      return "DAC0 audio output";
     case "sevenSeg":
-      return "7-segment display";
+      return "7-segment select";
     case "ledBar":
-      return "LED bar";
+      return "LED bar select";
     case "matrix":
-      return "LED matrix 5x7";
+      return "LED matrix select";
     case "joystick":
-      return "Joystick X";
+      return "Joystick X voltage";
     case "keypad":
-      return "Keypad";
+      return "Keypad read select";
     case "lcd":
-      return "LCD";
+      return "LCD select";
   }
   return source;
 }

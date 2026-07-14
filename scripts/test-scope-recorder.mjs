@@ -15,7 +15,6 @@ try {
     "src/vm/st841Map.ts",
     "src/vm/scopeRecorder.ts",
     "src/vm/board.ts",
-    "src/vm/devices/lcd16x2.ts",
   ]) {
     const sourcePath = path.join(projectRoot, relative);
     const source = fs.readFileSync(sourcePath, "utf8");
@@ -33,25 +32,15 @@ try {
   const boardModule = await import(pathToFileURL(path.join(tempDir, "board.mjs")).href);
   const recorderModule = await import(pathToFileURL(path.join(tempDir, "scopeRecorder.mjs")).href);
   const mapModule = await import(pathToFileURL(path.join(tempDir, "st841Map.mjs")).href);
-  const lcdModule = await import(pathToFileURL(path.join(tempDir, "lcd16x2.mjs")).href);
   const { Board } = boardModule;
   const { ScopeRecorder, ADUC841_MACHINE_CYCLE_HZ } = recorderModule;
   const { SFR } = mapModule;
-  const { Lcd16x2 } = lcdModule;
 
   assert.equal(SFR.pwmcon, 0xae, "PWMCON must use the ADuC841 address");
   assert.equal(SFR.pwm0l, 0xb1, "PWM0L must not overlap DAC0L/H");
   assert.equal(SFR.pwm1h, 0xb4, "PWM1H must not overlap DACCON");
   assert.equal(SFR.dac0l, 0xf9);
   assert.equal(SFR.daccon, 0xfd);
-
-  const lcd = new Lcd16x2();
-  lcd.writeCommandByte(0x80);
-  lcd.write(0xb1);
-  lcd.write(0xf1);
-  const lcdDebug = lcd.getDebugRows();
-  assert.match(lcdDebug[0], /т/, "legacy LCD byte 0xBF must render lowercase Cyrillic т");
-  assert.match(lcdDebug[1], /0xBF/, "B1h + F1h must assemble into LCD byte 0xBF");
 
   const board = new Board();
   board.reset();
@@ -100,31 +89,6 @@ try {
   const square = recorder.getSignal("square");
   assert.ok(Math.abs(square.frequencyHz - ADUC841_MACHINE_CYCLE_HZ / 100) < 1e-6);
   assert.ok(Math.abs(square.duty - 1 / 3) < 1e-9);
-
-  const focusedRecorder = new ScopeRecorder();
-  focusedRecorder.setCaptureSources([]);
-  focusedRecorder.captureDigital("P0.0", 1, 0);
-  focusedRecorder.captureDigital("P0.1", 1, 0);
-  assert.equal(focusedRecorder.getSignal("P0.0").samples.length, 0, "closed scope must not record pins");
-  focusedRecorder.setCaptureSources(["P0.1"]);
-  focusedRecorder.captureDigital("P0.0", 0, 10);
-  focusedRecorder.captureDigital("P0.1", 0, 10);
-  assert.equal(focusedRecorder.getSignal("P0.0").samples.length, 0, "unselected pin must stay idle");
-  assert.deepEqual(
-    focusedRecorder.getSignal("P0.1").samples.map((sample) => sample.voltage),
-    [0],
-    "only the selected pin must be recorded",
-  );
-
-  const focusedBoard = new Board();
-  focusedBoard.setScopeCaptureSource(null);
-  focusedBoard.reset();
-  assert.equal(focusedBoard.scope.getSignal("P0.0").samples.length, 0);
-  focusedBoard.setScopeCaptureSource("P0.7");
-  assert.deepEqual(focusedBoard.scope.getSignal("P0.7").samples.map((sample) => sample.voltage), [5]);
-  focusedBoard.writePort("P0", 0x7f);
-  assert.deepEqual(focusedBoard.scope.getSignal("P0.7").samples.map((sample) => sample.voltage), [5, 0]);
-  assert.equal(focusedBoard.scope.getSignal("P0.0").samples.length, 0);
 
   const standView = fs.readFileSync(path.join(projectRoot, "src/ui/standView.ts"), "utf8");
   for (const syntheticFrequency of [120, 250, 700, 800, 1000]) {

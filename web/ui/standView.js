@@ -5,12 +5,10 @@ import { checkC } from "./cChecker.js";
 import { transpileCToAsm } from "./cTranspiler.js";
 import { createMotorPanel } from "./motorPanel.js";
 import { LiveAudioMonitor } from "./liveAudioMonitor.js";
+import { createLogicEditor } from "./logicEditor.js";
 import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js";
 export function renderStand(params) {
     const { board } = params;
-    // The oscilloscope records no channels while closed. Opening it selects
-    // exactly one source, which prevents all 32 port pins accumulating traces.
-    board.setScopeCaptureSource(null);
     const cpu = new EmuBoardController(board);
     const liveAudio = new LiveAudioMonitor();
     const root = el("div", { class: "minimalShell" });
@@ -22,6 +20,7 @@ export function renderStand(params) {
     const stepBtn = button("Step");
     const traceBtn = button("Runner");
     const oscilloscopeBtn = button("\u041e\u0441\u0446\u0438\u043b\u043e\u0433\u0440\u0430\u0444");
+    const logicEditorBtn = button("Логічні схеми");
     const modeSelect = el("select", { class: "samplePicker" });
     modeSelect.append(option("asm", "ASM"), option("c", "C"));
     const fileNameInput = el("input", { class: "fileNameInput mono", value: "main", title: "File name" });
@@ -46,7 +45,9 @@ export function renderStand(params) {
         speedGroup.appendChild(node);
         return { speed, node };
     });
-    toolbar.append(runBtn, resetBtn, stepBtn, fileNameInput, modeSelect, fileMenuWrap, traceBtn, oscilloscopeBtn, speedGroup);
+    const fullscreenBtn = button("⛶", "fullscreenBtn");
+    fullscreenBtn.title = "Повноекранний режим";
+    toolbar.append(runBtn, resetBtn, stepBtn, fileNameInput, modeSelect, fileMenuWrap, traceBtn, oscilloscopeBtn, logicEditorBtn, speedGroup, fullscreenBtn);
     windowCard.appendChild(toolbar);
     const debugModal = el("div", { class: "debugModal hidden" });
     const debugCard = el("div", { class: "debugCard" });
@@ -59,14 +60,15 @@ export function renderStand(params) {
     const debugBody = el("div", { class: "debugBody" });
     debugCard.append(debugHead, debugBody);
     debugModal.appendChild(debugCard);
-    root.appendChild(debugModal);
+    windowCard.appendChild(debugModal);
     const motorPanel = createMotorPanel({
         motor: board.extraDevices.motor,
         audio: board.extraDevices.audio,
         getScopeSignal: (source) => board.scope.getSignal(source),
-        setScopeCaptureSource: (source) => board.setScopeCaptureSource(source),
     });
-    root.appendChild(motorPanel.element);
+    windowCard.appendChild(motorPanel.element);
+    const logicEditor = createLogicEditor({ board });
+    windowCard.appendChild(logicEditor.element);
     const mainRow = el("div", { class: "mainRow" });
     const boardPane = el("section", { class: "boardPane" });
     const editorPane = el("section", { class: "editorPane" });
@@ -624,6 +626,15 @@ export function renderStand(params) {
         liveAudio.touch();
         motorPanel.openScope("general");
     });
+    logicEditorBtn.addEventListener("click", () => {
+        liveAudio.touch();
+        logicEditor.open();
+    });
+    fullscreenBtn.addEventListener("click", () => {
+        liveAudio.touch();
+        toggleSimulatorFullscreen();
+    });
+    document.addEventListener("fullscreenchange", syncFullscreenButton);
     motorWrap.addEventListener("click", () => {
         liveAudio.touch();
         motorPanel.open("motor");
@@ -972,6 +983,26 @@ export function renderStand(params) {
     function syncRunButton() {
         runBtn.textContent = isRunning ? "Stop" : "Start";
         runBtn.className = `topBtn ${isRunning ? "red" : "green"}`;
+    }
+    async function toggleSimulatorFullscreen() {
+        try {
+            if (document.fullscreenElement === windowCard) {
+                await document.exitFullscreen();
+            }
+            else if (windowCard.requestFullscreen) {
+                await windowCard.requestFullscreen();
+            }
+        }
+        catch {
+            // Ignore browser-level fullscreen denial; the button simply stays unchanged.
+        }
+        syncFullscreenButton();
+    }
+    function syncFullscreenButton() {
+        const active = document.fullscreenElement === windowCard;
+        fullscreenBtn.textContent = active ? "🗗" : "⛶";
+        fullscreenBtn.title = active ? "Вийти з повноекранного режиму" : "Повноекранний режим";
+        fullscreenBtn.classList.toggle("active", active);
     }
     function setSpeed(speed) {
         currentSpeed = speed;
