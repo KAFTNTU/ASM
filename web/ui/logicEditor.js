@@ -56,8 +56,7 @@ export function createLogicEditor(options) {
     const fileButton = menuButton("Файл");
     const editButton = menuButton("Редагування");
     const viewButton = menuButton("Вигляд");
-    const helpButton = menuButton("Довідка");
-    menuBar.append(fileButton, editButton, viewButton, helpButton);
+    menuBar.append(fileButton, editButton, viewButton);
     const mainToolbar = div("logicMainToolbar");
     const quickToolButtons = new Map();
     const runButton = toolbarButton("▶", "", "Запустити або призупинити симуляцію", true);
@@ -148,7 +147,6 @@ export function createLogicEditor(options) {
         ["Повноекранний режим", toggleFullscreen],
         ["Показати таблицю істинності", showTruthTable],
     ]));
-    helpButton.addEventListener("click", () => showInfoDialog("Як працювати", "Додайте входи, логічні елементи та виходи. Дріт можна починати з входу або виходу, але з’єднання має завершуватися контактом протилежного типу. Кути вибраного дроту перетягуються квадратними ручками. Shift додає об’єкти до виділення, а протягування по вільному полю створює рамку. Подвійний клік по MUX, DEC, суматору або власній мікросхемі відкриває внутрішню схему."));
     libraryTab.addEventListener("click", () => setSidebarTab("library"));
     propertiesTab.addEventListener("click", () => setSidebarTab("properties"));
     runButton.addEventListener("click", () => {
