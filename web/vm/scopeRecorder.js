@@ -13,6 +13,20 @@ export class ScopeRecorder {
     constructor() {
         this.cycle = 0;
         this.traces = new Map();
+        this.recordingEnabled = true;
+    }
+    /** Keep fast PWM/DAC history off until the oscilloscope is opened. */
+    setRecordingEnabled(enabled) {
+        const next = Boolean(enabled);
+        if (next === this.recordingEnabled)
+            return;
+        this.recordingEnabled = next;
+        // Opening or closing starts a clean, relevant time window and releases
+        // memory gathered by the previous session.
+        this.traces.clear();
+    }
+    isRecordingEnabled() {
+        return this.recordingEnabled;
     }
     reset() {
         this.cycle = 0;
@@ -34,6 +48,8 @@ export class ScopeRecorder {
         this.captureVoltage(source, Number.isFinite(voltage) ? voltage : 0, cycle);
     }
     captureVoltage(source, voltage, cycle = this.cycle) {
+        if (!this.recordingEnabled)
+            return;
         const key = String(source);
         const timeSeconds = Math.max(0, cycle) / ADUC841_MACHINE_CYCLE_HZ;
         const value = Number.isFinite(voltage) ? voltage : 0;

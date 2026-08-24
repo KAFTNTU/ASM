@@ -25,15 +25,24 @@ export class Board {
 
   private joystick = { x: 2048, y: 2048 };
   private keypadPressed = new Set<number>();
+  private readonly busContext = {
+    joystick: this.joystick,
+    keypadPressed: this.keypadPressed,
+  };
+  private inputRevision = 0;
+  private visualRevision = 0;
 
   reset(): void {
     this.scope.reset();
     this.ports = { P0: 0xff, P1: 0xff, P2: 0x00, P3: 0xff };
     this.externalDriveMask = { P0: 0, P1: 0, P2: 0, P3: 0 };
     this.externalDriveValue = { P0: 0, P1: 0, P2: 0, P3: 0 };
-    this.joystick = { x: 2048, y: 2048 };
+    this.joystick.x = 2048;
+    this.joystick.y = 2048;
     this.abortSignal = null;
     this.keypadPressed.clear();
+    this.inputRevision += 1;
+    this.visualRevision += 1;
 
     for (const device of Object.values(this.extraDevices)) {
       if (device && typeof device.reset === "function") {
@@ -65,10 +74,7 @@ export class Board {
     if (name === "P0") {
       const p36 = this.readBit("P3", 6);
       if (p36 === 0) {
-        const busVal = this.bus.read(this.ports.P2, {
-          joystick: this.joystick,
-          keypadPressed: this.getReadableKeys(),
-        });
+        const busVal = this.bus.read(this.ports.P2, this.busContext);
         return this.applyExternalDrive(name, busVal == null ? 0xff : busVal & 0xff);
       }
     }
@@ -86,6 +92,7 @@ export class Board {
     if (previous === v) return;
 
     this.ports[name] = v;
+    this.visualRevision += 1;
     this.captureChangedPortBits(name, previous, v);
 
     if (name === "P2") {
@@ -101,11 +108,15 @@ export class Board {
   }
 
   applyCpuPorts(ports: { p0: number; p1: number; p2: number; p3: number }): void {
+    this.applyCpuPortValues(ports.p0, ports.p1, ports.p2, ports.p3);
+  }
+
+  applyCpuPortValues(p0: number, p1: number, p2: number, p3: number): void {
     // Keep latch semantics and oscilloscope recording centralized in writePort().
-    this.writePort("P3", ports.p3 & 0xff);
-    this.writePort("P1", ports.p1 & 0xff);
-    this.writePort("P0", ports.p0 & 0xff);
-    this.writePort("P2", ports.p2 & 0xff);
+    this.writePort("P3", p3 & 0xff);
+    this.writePort("P1", p1 & 0xff);
+    this.writePort("P0", p0 & 0xff);
+    this.writePort("P2", p2 & 0xff);
   }
 
   readBit(name: PortName, bit: number): 0 | 1 {
@@ -123,6 +134,7 @@ export class Board {
       if (value) this.externalDriveValue[name] |= mask;
       else this.externalDriveValue[name] &= ~mask;
     }
+    this.inputRevision += 1;
     this.captureEffectivePortBit(name, bit);
   }
 
@@ -155,8 +167,12 @@ export class Board {
   }
 
   setJoystick(x: number, y: number): void {
-    this.joystick.x = clamp(x);
-    this.joystick.y = clamp(y);
+    const nextX = clamp(x);
+    const nextY = clamp(y);
+    if (nextX === this.joystick.x && nextY === this.joystick.y) return;
+    this.joystick.x = nextX;
+    this.joystick.y = nextY;
+    this.inputRevision += 1;
     this.extraDevices.adc?.set(this.joystick.x, this.joystick.y);
     this.scope.captureAnalog("joystick", (this.joystick.x / 4095) * 5);
   }
@@ -165,17 +181,28 @@ export class Board {
     return { ...this.joystick };
   }
 
+  getInputRevision(): number {
+    return this.inputRevision;
+  }
+
+  getVisualRevision(): number {
+    return this.visualRevision;
+  }
+
   keypadPress(index: number, hold = true): void {
+    const wasPressed = this.keypadPressed.has(index);
     this.keypadPressed.add(index);
+    if (!wasPressed) this.inputRevision += 1;
     this.extraDevices.keypad?.press(index);
     if (!hold) {
       this.keypadPressed.delete(index);
+      this.inputRevision += 1;
       this.extraDevices.keypad?.release(index);
     }
   }
 
   keypadRelease(index: number): void {
-    this.keypadPressed.delete(index);
+    if (this.keypadPressed.delete(index)) this.inputRevision += 1;
     this.extraDevices.keypad?.release(index);
   }
 
@@ -184,11 +211,9 @@ export class Board {
   }
 
   getKeypadBusPreview(): { col1: number; col2: number; col3: number } {
-    const pressed = this.getReadableKeys();
-    const ctx = { joystick: this.joystick, keypadPressed: pressed };
-    const col1 = this.bus.read(0x60, ctx);
-    const col2 = this.bus.read(0x50, ctx);
-    const col3 = this.bus.read(0x30, ctx);
+    const col1 = this.bus.read(0x60, this.busContext);
+    const col2 = this.bus.read(0x50, this.busContext);
+    const col3 = this.bus.read(0x30, this.busContext);
     return {
       col1: (col1 ?? 0xff) & 0xff,
       col2: (col2 ?? 0xff) & 0xff,
@@ -245,10 +270,6 @@ export class Board {
     );
     this.scope.captureDigital("lcd", writeSelected && address === ST841_MAP.lcdAddr);
     this.scope.captureDigital("keypad", rxMode && isKeypadAddress(address));
-  }
-
-  private getReadableKeys(): Set<number> {
-    return new Set(this.keypadPressed);
   }
 
   render(ctx: CanvasRenderingContext2D, w: number, h: number): void {

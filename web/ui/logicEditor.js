@@ -1669,12 +1669,6 @@ export function createLogicEditor(options) {
                     updateStatus();
                 lastClockTime = now;
             }
-            else if (!open) {
-                // Keep autonomous clocks, sequential blocks and optional ADuC
-                // connections alive while the editor window is hidden.
-                adapter.releaseAll();
-                stepLogicProject(project, project.rootCircuitId, adapter);
-            }
         }
         window.requestAnimationFrame(tick);
     }

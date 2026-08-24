@@ -19,15 +19,24 @@ export class Board {
         this.extraDevices = {};
         this.joystick = { x: 2048, y: 2048 };
         this.keypadPressed = new Set();
+        this.busContext = {
+            joystick: this.joystick,
+            keypadPressed: this.keypadPressed,
+        };
+        this.inputRevision = 0;
+        this.visualRevision = 0;
     }
     reset() {
         this.scope.reset();
         this.ports = { P0: 0xff, P1: 0xff, P2: 0x00, P3: 0xff };
         this.externalDriveMask = { P0: 0, P1: 0, P2: 0, P3: 0 };
         this.externalDriveValue = { P0: 0, P1: 0, P2: 0, P3: 0 };
-        this.joystick = { x: 2048, y: 2048 };
+        this.joystick.x = 2048;
+        this.joystick.y = 2048;
         this.abortSignal = null;
         this.keypadPressed.clear();
+        this.inputRevision += 1;
+        this.visualRevision += 1;
         for (const device of Object.values(this.extraDevices)) {
             if (device && typeof device.reset === "function") {
                 device.reset();
@@ -55,10 +64,7 @@ export class Board {
         if (name === "P0") {
             const p36 = this.readBit("P3", 6);
             if (p36 === 0) {
-                const busVal = this.bus.read(this.ports.P2, {
-                    joystick: this.joystick,
-                    keypadPressed: this.getReadableKeys(),
-                });
+                const busVal = this.bus.read(this.ports.P2, this.busContext);
                 return this.applyExternalDrive(name, busVal == null ? 0xff : busVal & 0xff);
             }
         }
@@ -73,6 +79,7 @@ export class Board {
         if (previous === v)
             return;
         this.ports[name] = v;
+        this.visualRevision += 1;
         this.captureChangedPortBits(name, previous, v);
         if (name === "P2") {
             // ST841 latch write: P2 transition ADR -> 0 in TX mode.
@@ -85,11 +92,14 @@ export class Board {
         }
     }
     applyCpuPorts(ports) {
+        this.applyCpuPortValues(ports.p0, ports.p1, ports.p2, ports.p3);
+    }
+    applyCpuPortValues(p0, p1, p2, p3) {
         // Keep latch semantics and oscilloscope recording centralized in writePort().
-        this.writePort("P3", ports.p3 & 0xff);
-        this.writePort("P1", ports.p1 & 0xff);
-        this.writePort("P0", ports.p0 & 0xff);
-        this.writePort("P2", ports.p2 & 0xff);
+        this.writePort("P3", p3 & 0xff);
+        this.writePort("P1", p1 & 0xff);
+        this.writePort("P0", p0 & 0xff);
+        this.writePort("P2", p2 & 0xff);
     }
     readBit(name, bit) {
         const v = (this.readPort(name) >>> bit) & 1;
@@ -109,6 +119,7 @@ export class Board {
             else
                 this.externalDriveValue[name] &= ~mask;
         }
+        this.inputRevision += 1;
         this.captureEffectivePortBit(name, bit);
     }
     getExternalDigitalDrive(name, bit) {
@@ -140,35 +151,49 @@ export class Board {
         });
     }
     setJoystick(x, y) {
-        this.joystick.x = clamp(x);
-        this.joystick.y = clamp(y);
+        const nextX = clamp(x);
+        const nextY = clamp(y);
+        if (nextX === this.joystick.x && nextY === this.joystick.y)
+            return;
+        this.joystick.x = nextX;
+        this.joystick.y = nextY;
+        this.inputRevision += 1;
         this.extraDevices.adc?.set(this.joystick.x, this.joystick.y);
         this.scope.captureAnalog("joystick", (this.joystick.x / 4095) * 5);
     }
     getJoystick() {
         return { ...this.joystick };
     }
+    getInputRevision() {
+        return this.inputRevision;
+    }
+    getVisualRevision() {
+        return this.visualRevision;
+    }
     keypadPress(index, hold = true) {
+        const wasPressed = this.keypadPressed.has(index);
         this.keypadPressed.add(index);
+        if (!wasPressed)
+            this.inputRevision += 1;
         this.extraDevices.keypad?.press(index);
         if (!hold) {
             this.keypadPressed.delete(index);
+            this.inputRevision += 1;
             this.extraDevices.keypad?.release(index);
         }
     }
     keypadRelease(index) {
-        this.keypadPressed.delete(index);
+        if (this.keypadPressed.delete(index))
+            this.inputRevision += 1;
         this.extraDevices.keypad?.release(index);
     }
     getPressedKeys() {
         return Array.from(this.keypadPressed).sort((a, b) => a - b);
     }
     getKeypadBusPreview() {
-        const pressed = this.getReadableKeys();
-        const ctx = { joystick: this.joystick, keypadPressed: pressed };
-        const col1 = this.bus.read(0x60, ctx);
-        const col2 = this.bus.read(0x50, ctx);
-        const col3 = this.bus.read(0x30, ctx);
+        const col1 = this.bus.read(0x60, this.busContext);
+        const col2 = this.bus.read(0x50, this.busContext);
+        const col3 = this.bus.read(0x30, this.busContext);
         return {
             col1: (col1 ?? 0xff) & 0xff,
             col2: (col2 ?? 0xff) & 0xff,
@@ -213,9 +238,6 @@ export class Board {
         this.scope.captureDigital("matrix", writeSelected && (address === ST841_MAP.matrixRowsAddr || address === ST841_MAP.matrixColsAddr));
         this.scope.captureDigital("lcd", writeSelected && address === ST841_MAP.lcdAddr);
         this.scope.captureDigital("keypad", rxMode && isKeypadAddress(address));
-    }
-    getReadableKeys() {
-        return new Set(this.keypadPressed);
     }
     render(ctx, w, h) {
         ctx.clearRect(0, 0, w, h);

@@ -10,6 +10,10 @@ export class LiveAudioMonitor {
   private leftPan: StereoPannerNode | null = null;
   private rightPan: StereoPannerNode | null = null;
   private armed = false;
+  private lastActive = false;
+  private lastFrequency = -1;
+  private lastLeftLevel = -1;
+  private lastRightLevel = -1;
 
   touch(): void {
     this.ensureGraph();
@@ -17,7 +21,7 @@ export class LiveAudioMonitor {
   }
 
   update(telemetry: AudioTelemetry | null): void {
-    this.ensureGraph();
+    if (!this.armed) return;
     if (!this.context || !this.masterGain || !this.leftGain || !this.rightGain || !this.leftOsc || !this.rightOsc) {
       return;
     }
@@ -27,6 +31,19 @@ export class LiveAudioMonitor {
     const audibleFrequency = toAudibleFrequency(telemetry?.frequencyHz ?? 0);
     const leftLevel = telemetry ? Math.min(1, Math.abs(telemetry.leftVolts - 2.5) / 2.5) : 0;
     const rightLevel = telemetry ? Math.min(1, Math.abs(telemetry.rightVolts - 2.5) / 2.5) : 0;
+    const active = Boolean(telemetry?.active);
+    if (
+      active === this.lastActive &&
+      Math.abs(audibleFrequency - this.lastFrequency) < 0.5 &&
+      Math.abs(leftLevel - this.lastLeftLevel) < 0.002 &&
+      Math.abs(rightLevel - this.lastRightLevel) < 0.002
+    ) {
+      return;
+    }
+    this.lastActive = active;
+    this.lastFrequency = audibleFrequency;
+    this.lastLeftLevel = leftLevel;
+    this.lastRightLevel = rightLevel;
 
     this.masterGain.gain.cancelScheduledValues(now);
     this.masterGain.gain.linearRampToValueAtTime(targetGain, now + 0.015);

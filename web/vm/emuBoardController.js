@@ -15,10 +15,19 @@ export class EmuBoardController {
         this.pwmScopeFrequencyHz = 0;
         this.pwmScopeLastLevel = 0;
         this.lastAudioDac0 = -1;
+        this.lastPwmRegisters = [-1, -1, -1, -1, -1];
+        this.lastAudioRegisters = [-1, -1, -1, -1, -1];
+        this.lastAdcConfig = -1;
+        this.lastAdcInputRevision = -1;
+        this.lastAdcLow = -1;
+        this.lastAdcHigh = -1;
         this.batchSize = 184320;
         this.portLatches = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
         this.preTickEffective = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
-        this.trace = [];
+        this.traceEnabled = false;
+        this.trace = new Array(EmuBoardController.TRACE_CAPACITY);
+        this.traceStart = 0;
+        this.traceCount = 0;
     }
     async init() {
         if (!this.emu) {
@@ -39,8 +48,14 @@ export class EmuBoardController {
         this.pwmScopeFrequencyHz = 0;
         this.pwmScopeLastLevel = 0;
         this.lastAudioDac0 = -1;
+        this.lastPwmRegisters.fill(-1);
+        this.lastAudioRegisters.fill(-1);
+        this.lastAdcConfig = -1;
+        this.lastAdcInputRevision = -1;
+        this.lastAdcLow = -1;
+        this.lastAdcHigh = -1;
         this.board.setSimulationCycle(0);
-        this.trace = [];
+        this.clearTrace();
         this.portLatches = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
         this.preTickEffective = { ...this.portLatches };
         this.seedPorts();
@@ -59,10 +74,15 @@ export class EmuBoardController {
         this.syncCpuToBoard();
         return image.length;
     }
-    step(instructions = 1) {
+    step(instructions = 1, deadlineMs = Number.POSITIVE_INFINITY) {
         if (!this.emu)
-            return;
+            return 0;
+        let executed = 0;
         for (let index = 0; index < instructions; index++) {
+            // Checking every 256 cycles keeps timing overhead negligible while
+            // preventing a high-speed program from freezing input and SVG drawing.
+            if ((index & 0xff) === 0 && performance.now() >= deadlineMs)
+                break;
             this.board.setSimulationCycle(this.machineCycles);
             const pc = this.emu.getPC() & 0xffff;
             const opcode = this.emu.readCode(pc) & 0xff;
@@ -72,12 +92,7 @@ export class EmuBoardController {
             // Make MOV A,P0 always sample live keypad value in RX mode.
             if (isMovAP0) {
                 const p3 = this.emu.getSfr(SFR.p3) & 0xff;
-                this.board.applyCpuPorts({
-                    p0: this.emu.getSfr(SFR.p0) & 0xff,
-                    p1: this.emu.getSfr(SFR.p1) & 0xff,
-                    p2: this.emu.getSfr(SFR.p2) & 0xff,
-                    p3,
-                });
+                this.board.applyCpuPortValues(this.emu.getSfr(SFR.p0) & 0xff, this.emu.getSfr(SFR.p1) & 0xff, this.emu.getSfr(SFR.p2) & 0xff, p3);
                 if (((p3 >> 6) & 1) === 0) {
                     this.emu.setSfr(SFR.p0, this.board.readPort("P0"));
                 }
@@ -87,8 +102,8 @@ export class EmuBoardController {
             this.board.setSimulationCycle(this.machineCycles);
             if (instructionStarted) {
                 this.instructions += 1;
-                const shouldTrace = !this.running ||
-                    index % EmuBoardController.TRACE_SAMPLE_WHILE_RUN === 0;
+                const shouldTrace = this.traceEnabled && (!this.running ||
+                    index % EmuBoardController.TRACE_SAMPLE_WHILE_RUN === 0);
                 if (shouldTrace) {
                     this.pushTrace({
                         pc,
@@ -101,7 +116,9 @@ export class EmuBoardController {
                 }
             }
             this.syncCpuToBoard();
+            executed += 1;
         }
+        return executed;
     }
     setSpeed(batchSize) {
         this.batchSize = Math.max(1, Math.min(500000, batchSize | 0));
@@ -114,7 +131,7 @@ export class EmuBoardController {
         const frame = () => {
             if (!this.running)
                 return;
-            this.step(this.batchSize);
+            this.step(this.batchSize, performance.now() + EmuBoardController.RUN_FRAME_BUDGET_MS);
             this.rafId = window.requestAnimationFrame(frame);
         };
         this.rafId = window.requestAnimationFrame(frame);
@@ -154,11 +171,29 @@ export class EmuBoardController {
         return this.machineCycles / ADUC841_MACHINE_CYCLE_HZ;
     }
     getTrace(limit = 40) {
-        const n = Math.max(1, Math.min(200, limit | 0));
-        return this.trace.slice(-n);
+        const requested = Math.max(1, Math.min(200, limit | 0));
+        const count = Math.min(requested, this.traceCount);
+        const result = [];
+        const first = (this.traceStart + this.traceCount - count) % EmuBoardController.TRACE_CAPACITY;
+        for (let index = 0; index < count; index += 1) {
+            const entry = this.trace[(first + index) % EmuBoardController.TRACE_CAPACITY];
+            if (entry)
+                result.push(entry);
+        }
+        return result;
     }
     clearTrace() {
-        this.trace = [];
+        this.trace.fill(undefined);
+        this.traceStart = 0;
+        this.traceCount = 0;
+    }
+    setTraceEnabled(enabled) {
+        const next = Boolean(enabled);
+        if (next === this.traceEnabled)
+            return;
+        this.traceEnabled = next;
+        if (!next)
+            this.clearTrace();
     }
     seedPorts() {
         this.emu?.setSfr(SFR.p0, 0xff);
@@ -181,13 +216,11 @@ export class EmuBoardController {
         this.serviceAdc();
         this.servicePwm();
         // Preserve MCU output latches separately from externally driven pin levels.
-        this.board.applyCpuPorts(this.portLatches);
-        this.preTickEffective = {
-            p0: this.board.readPort("P0"),
-            p1: this.board.readPort("P1"),
-            p2: this.board.readPort("P2"),
-            p3: this.board.readPort("P3"),
-        };
+        this.board.applyCpuPortValues(this.portLatches.p0, this.portLatches.p1, this.portLatches.p2, this.portLatches.p3);
+        this.preTickEffective.p0 = this.board.readPort("P0");
+        this.preTickEffective.p1 = this.board.readPort("P1");
+        this.preTickEffective.p2 = this.board.readPort("P2");
+        this.preTickEffective.p3 = this.board.readPort("P3");
         this.emu.setSfr(SFR.p0, this.preTickEffective.p0);
         this.emu.setSfr(SFR.p1, this.preTickEffective.p1);
         this.emu.setSfr(SFR.p2, this.preTickEffective.p2);
@@ -201,40 +234,59 @@ export class EmuBoardController {
     syncCpuToBoard() {
         if (!this.emu)
             return;
-        const after = {
-            p0: this.emu.getSfr(SFR.p0) & 0xff,
-            p1: this.emu.getSfr(SFR.p1) & 0xff,
-            p2: this.emu.getSfr(SFR.p2) & 0xff,
-            p3: this.emu.getSfr(SFR.p3) & 0xff,
-        };
+        const afterP0 = this.emu.getSfr(SFR.p0) & 0xff;
+        const afterP1 = this.emu.getSfr(SFR.p1) & 0xff;
+        const afterP2 = this.emu.getSfr(SFR.p2) & 0xff;
+        const afterP3 = this.emu.getSfr(SFR.p3) & 0xff;
         // If a value still equals the externally resolved level, assume the
         // instruction did not rewrite that port and retain the previous latch.
         // A changed value is a CPU port write and becomes the new latch.
-        for (const name of ["p0", "p1", "p2", "p3"]) {
-            if (after[name] !== this.preTickEffective[name])
-                this.portLatches[name] = after[name];
-        }
+        if (afterP0 !== this.preTickEffective.p0)
+            this.portLatches.p0 = afterP0;
+        if (afterP1 !== this.preTickEffective.p1)
+            this.portLatches.p1 = afterP1;
+        if (afterP2 !== this.preTickEffective.p2)
+            this.portLatches.p2 = afterP2;
+        if (afterP3 !== this.preTickEffective.p3)
+            this.portLatches.p3 = afterP3;
         this.emu.setSfr(SFR.p0, this.portLatches.p0);
         this.emu.setSfr(SFR.p1, this.portLatches.p1);
         this.emu.setSfr(SFR.p2, this.portLatches.p2);
         this.emu.setSfr(SFR.p3, this.portLatches.p3);
-        this.board.applyCpuPorts(this.portLatches);
+        this.board.applyCpuPortValues(this.portLatches.p0, this.portLatches.p1, this.portLatches.p2, this.portLatches.p3);
         this.servicePwmScope();
         this.serviceAudio();
     }
     serviceAdc() {
         if (!this.emu)
             return;
-        const adcon2 = this.emu.getSfr(ST841_MAP.adc.adcon2);
+        const adcon2 = this.emu.getSfr(ST841_MAP.adc.adcon2) & 0xff;
         const channel = adcon2 & 0x0f;
-        const joystick = this.board.getJoystick();
-        const sample = this.readAdcChannel(channel, joystick);
-        this.emu.setSfr(ST841_MAP.adc.dataLow, sample & 0xff);
-        this.emu.setSfr(ST841_MAP.adc.dataHigh, ((channel & 0x0f) << 4) | ((sample >> 8) & 0x0f));
+        const inputRevision = this.board.getInputRevision();
+        const config = adcon2 & ~(ST841_MAP.adc.sconvMask | ST841_MAP.adc.adciMask);
+        const needsSample = config !== this.lastAdcConfig ||
+            inputRevision !== this.lastAdcInputRevision ||
+            this.lastAdcLow < 0 ||
+            this.lastAdcHigh < 0;
+        if (needsSample) {
+            const joystick = this.board.getJoystick();
+            const sample = this.readAdcChannel(channel, joystick);
+            this.lastAdcLow = sample & 0xff;
+            this.lastAdcHigh = ((channel & 0x0f) << 4) | ((sample >> 8) & 0x0f);
+            this.lastAdcConfig = config;
+            this.lastAdcInputRevision = inputRevision;
+        }
+        if ((this.emu.getSfr(ST841_MAP.adc.dataLow) & 0xff) !== this.lastAdcLow) {
+            this.emu.setSfr(ST841_MAP.adc.dataLow, this.lastAdcLow);
+        }
+        if ((this.emu.getSfr(ST841_MAP.adc.dataHigh) & 0xff) !== this.lastAdcHigh) {
+            this.emu.setSfr(ST841_MAP.adc.dataHigh, this.lastAdcHigh);
+        }
         // Keep lab snippets unblocked: conversion is treated as always-ready.
         const nextAdcon2 = (this.emu.getSfr(ST841_MAP.adc.adcon2) & ~ST841_MAP.adc.sconvMask) |
             ST841_MAP.adc.adciMask;
-        this.emu.setSfr(ST841_MAP.adc.adcon2, nextAdcon2);
+        if (nextAdcon2 !== adcon2)
+            this.emu.setSfr(ST841_MAP.adc.adcon2, nextAdcon2);
     }
     serviceTimer0() {
         if (!this.emu)
@@ -247,21 +299,15 @@ export class EmuBoardController {
         const mode = tmod & 0x03;
         if (mode !== 0x01)
             return; // Lab code uses 16-bit mode
-        let tl0 = this.emu.getSfr(SFR.tl0) & 0xff;
-        let th0 = this.emu.getSfr(SFR.th0) & 0xff;
-        for (let i = 0; i < EmuBoardController.TIMER0_ACCEL; i++) {
-            tl0 += 1;
-            if (tl0 > 0xff) {
-                tl0 = 0x00;
-                th0 += 1;
-                if (th0 > 0xff) {
-                    th0 = 0x00;
-                    this.emu.setSfr(SFR.tcon, (tcon | 0x20) & 0xff); // TF0=1
-                }
-            }
+        const current = ((this.emu.getSfr(SFR.th0) & 0xff) << 8) |
+            (this.emu.getSfr(SFR.tl0) & 0xff);
+        const advanced = current + EmuBoardController.TIMER0_ACCEL;
+        const next = advanced & 0xffff;
+        if (advanced > 0xffff) {
+            this.emu.setSfr(SFR.tcon, (tcon | 0x20) & 0xff); // TF0=1
         }
-        this.emu.setSfr(SFR.tl0, tl0 & 0xff);
-        this.emu.setSfr(SFR.th0, th0 & 0xff);
+        this.emu.setSfr(SFR.tl0, next & 0xff);
+        this.emu.setSfr(SFR.th0, (next >> 8) & 0xff);
     }
     readAdcChannel(channel, joystick) {
         switch (channel & 0x0f) {
@@ -282,10 +328,14 @@ export class EmuBoardController {
         }
     }
     pushTrace(entry) {
-        this.trace.push(entry);
-        if (this.trace.length > 400) {
-            this.trace.splice(0, this.trace.length - 400);
+        const capacity = EmuBoardController.TRACE_CAPACITY;
+        if (this.traceCount < capacity) {
+            this.trace[(this.traceStart + this.traceCount) % capacity] = entry;
+            this.traceCount += 1;
+            return;
         }
+        this.trace[this.traceStart] = entry;
+        this.traceStart = (this.traceStart + 1) % capacity;
     }
     servicePwm() {
         if (!this.emu)
@@ -298,6 +348,22 @@ export class EmuBoardController {
             (this.emu.getSfr(SFR.pwm0l) & 0xff);
         const pwm1 = ((this.emu.getSfr(SFR.pwm1h) & 0xff) << 8) |
             (this.emu.getSfr(SFR.pwm1l) & 0xff);
+        const pwm0h = (pwm0 >> 8) & 0xff;
+        const pwm0l = pwm0 & 0xff;
+        const pwm1h = (pwm1 >> 8) & 0xff;
+        const pwm1l = pwm1 & 0xff;
+        if (this.lastPwmRegisters[0] === pwmcon &&
+            this.lastPwmRegisters[1] === pwm0h &&
+            this.lastPwmRegisters[2] === pwm0l &&
+            this.lastPwmRegisters[3] === pwm1h &&
+            this.lastPwmRegisters[4] === pwm1l) {
+            return;
+        }
+        this.lastPwmRegisters[0] = pwmcon;
+        this.lastPwmRegisters[1] = pwm0h;
+        this.lastPwmRegisters[2] = pwm0l;
+        this.lastPwmRegisters[3] = pwm1h;
+        this.lastPwmRegisters[4] = pwm1l;
         const singleOutputMasked = ((pwmcon >> 7) & 0x01) === 1;
         const mode = (pwmcon >> 4) & 0x07;
         const cdiv = (pwmcon >> 2) & 0x03;
@@ -334,20 +400,33 @@ export class EmuBoardController {
             (this.emu.getSfr(SFR.dac0l) & 0xff);
         const dac1 = ((this.emu.getSfr(SFR.dac1h) & 0x0f) << 8) |
             (this.emu.getSfr(SFR.dac1l) & 0xff);
-        audio.setState({
-            daccon: this.emu.getSfr(SFR.daccon) & 0xff,
-            dac0,
-            dac1,
-            p34: ((p3 >> 4) & 1),
-            p35: ((p3 >> 5) & 1),
-            tick: this.machineCycles,
-        });
-        if (dac0 !== this.lastAudioDac0) {
+        const daccon = this.emu.getSfr(SFR.daccon) & 0xff;
+        const p34 = ((p3 >> 4) & 1);
+        const p35 = ((p3 >> 5) & 1);
+        const stateChanged = this.lastAudioRegisters[0] !== daccon ||
+            this.lastAudioRegisters[1] !== dac0 ||
+            this.lastAudioRegisters[2] !== dac1 ||
+            this.lastAudioRegisters[3] !== p34 ||
+            this.lastAudioRegisters[4] !== p35;
+        if (stateChanged) {
+            this.lastAudioRegisters[0] = daccon;
+            this.lastAudioRegisters[1] = dac0;
+            this.lastAudioRegisters[2] = dac1;
+            this.lastAudioRegisters[3] = p34;
+            this.lastAudioRegisters[4] = p35;
+            audio.setState({ daccon, dac0, dac1, p34, p35, tick: this.machineCycles });
+        }
+        if (!this.board.scope.isRecordingEnabled()) {
+            this.lastAudioDac0 = -1;
+        }
+        else if (dac0 !== this.lastAudioDac0) {
             this.lastAudioDac0 = dac0;
             this.board.scope.captureAnalog("audio", (dac0 / 4095) * 5, this.machineCycles);
         }
     }
     servicePwmScope() {
+        if (!this.board.scope.isRecordingEnabled())
+            return;
         let level = 0;
         if (this.pwmScopeActive && this.pwmScopeFrequencyHz > 0 && this.pwmScopeDuty > 0) {
             const phase = ((this.machineCycles * this.pwmScopeFrequencyHz) / ADUC841_MACHINE_CYCLE_HZ) % 1;
@@ -361,6 +440,10 @@ export class EmuBoardController {
 }
 EmuBoardController.TIMER0_ACCEL = 6;
 EmuBoardController.TRACE_SAMPLE_WHILE_RUN = 64;
+EmuBoardController.TRACE_CAPACITY = 400;
+// Keep the browser responsive: the emulator may use only a small part of
+// one animation frame and continues its remaining work on the next frame.
+EmuBoardController.RUN_FRAME_BUDGET_MS = 6;
 function mapJoystickToLabLevel(value) {
     // Lab 6 snippets compare THx against sparse values:
     // 01,03,05,07,09,0B,0C,0E,0F.

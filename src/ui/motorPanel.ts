@@ -59,6 +59,7 @@ export function createMotorPanel(params: {
   motor: PwmMotor;
   audio?: AudioCodec;
   getScopeSignal?(source: ScopeSource): ScopeSignal;
+  setScopeRecording?(enabled: boolean): void;
 }): MotorPanelController {
   const { motor, audio } = params;
 
@@ -422,6 +423,7 @@ export function createMotorPanel(params: {
       return;
     }
     scopeOpen = false;
+    params.setScopeRecording?.(false);
     syncScopeState();
     resize();
   });
@@ -494,6 +496,7 @@ export function createMotorPanel(params: {
   closeBtn.addEventListener("click", close);
   scopeBtn.addEventListener("click", () => {
     scopeOpen = !scopeOpen;
+    params.setScopeRecording?.(scopeOpen);
     syncScopeState();
     resize();
   });
@@ -641,6 +644,7 @@ export function createMotorPanel(params: {
     shell.classList.toggle("scope-only", scopeOnly);
     modal.classList.toggle("scope-only-mode", scopeOnly);
     scopeOpen = scopeOnly || scopeOpen;
+    params.setScopeRecording?.(scopeOpen);
     scopeSourcePicker.value = source;
     triggerMode = "None";
     singleArmed = false;
@@ -658,6 +662,8 @@ export function createMotorPanel(params: {
 
   function close(): void {
     opened = false;
+    scopeOpen = false;
+    params.setScopeRecording?.(false);
     activeResize = null;
     document.body.classList.remove("panel-resizing");
     modal.classList.add("hidden");

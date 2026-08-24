@@ -65,7 +65,10 @@ export function renderStand(params) {
         motor: board.extraDevices.motor,
         audio: board.extraDevices.audio,
         getScopeSignal: (source) => board.scope.getSignal(source),
+        setScopeRecording: (enabled) => board.scope.setRecordingEnabled(enabled),
     });
+    // Do not accumulate high-frequency scope samples until the user opens it.
+    board.scope.setRecordingEnabled(false);
     windowCard.appendChild(motorPanel.element);
     const logicEditor = createLogicEditor({ board });
     windowCard.appendChild(logicEditor.element);
@@ -217,7 +220,11 @@ export function renderStand(params) {
     let currentPcToLine = [];
     let lastUiUpdateTs = 0;
     let lastDebugUpdateTs = 0;
-    let lastFrameTs = performance.now();
+    // The stand, motor and oscilloscope are visual feedback. 30 FPS is smooth
+    // enough and leaves room for the 8051 emulator and the schematic editor.
+    const visualFrameIntervalMs = 1000 / 30;
+    let lastVisualFrameTs = performance.now() - visualFrameIntervalMs;
+    let lastBoardVisualRevision = -1;
     let debugOpen = false;
     let inputDebounce = null;
     let diagnosticLines = new Map();
@@ -616,27 +623,23 @@ export function renderStand(params) {
     joystickFace.addEventListener("pointerup", releaseJoystick);
     joystickFace.addEventListener("pointercancel", releaseJoystick);
     traceBtn.addEventListener("click", () => {
-        liveAudio.touch();
         debugOpen = true;
+        cpu.setTraceEnabled(true);
         debugModal.classList.remove("hidden");
         syncDeviceBadges();
         renderDebugPanel();
     });
     oscilloscopeBtn.addEventListener("click", () => {
-        liveAudio.touch();
         motorPanel.openScope("general");
     });
     logicEditorBtn.addEventListener("click", () => {
-        liveAudio.touch();
         logicEditor.open();
     });
     fullscreenBtn.addEventListener("click", () => {
-        liveAudio.touch();
         toggleSimulatorFullscreen();
     });
     document.addEventListener("fullscreenchange", syncFullscreenButton);
     motorWrap.addEventListener("click", () => {
-        liveAudio.touch();
         motorPanel.open("motor");
     });
     audioWrap.addEventListener("click", () => {
@@ -645,6 +648,7 @@ export function renderStand(params) {
     });
     debugClose.addEventListener("click", () => {
         debugOpen = false;
+        cpu.setTraceEnabled(false);
         debugModal.classList.add("hidden");
     });
     // Keep runner open until user presses "Close" explicitly.
@@ -731,21 +735,21 @@ export function renderStand(params) {
                 ...c.diagnostics.filter((d) => d.level !== "hint"),
                 ...transpiled.diagnostics,
                 ...asm.diagnostics,
-                ...buildCGuideHints(editor.value),
             ];
+            const visibleDiagnostics = merged.filter((d) => d.level !== "hint");
             const summary = editor.value.trim() ? (asm.ok ? "ok" : "errors") : "";
-            showMessages(merged, summary, expand);
+            showMessages(visibleDiagnostics, summary, expand);
             updateRuntimeBar(asm.ok);
             return { ok: asm.ok, diagnostics: merged, hex: asm.hex, pcToLine: [] };
         }
         const asm = compileAsm(editor.value);
-        const guideHints = buildAsmGuideHints(editor.value);
+        const visibleDiagnostics = asm.diagnostics.filter((d) => d.level !== "hint");
         currentHex = asm.hex;
         currentPcToLine = asm.pcToLine;
         const summary = editor.value.trim() ? (asm.ok ? "ok" : "errors") : "";
-        showMessages([...asm.diagnostics, ...guideHints], summary, expand);
+        showMessages(visibleDiagnostics, summary, expand);
         updateRuntimeBar(asm.ok);
-        return { ok: asm.ok, diagnostics: [...asm.diagnostics, ...guideHints], hex: asm.hex, pcToLine: asm.pcToLine };
+        return { ok: asm.ok, diagnostics: asm.diagnostics, hex: asm.hex, pcToLine: asm.pcToLine };
     }
     function showMessages(list, summary, expand = false) {
         diagnosticLines = buildDiagnosticLineMap(list);
@@ -770,7 +774,7 @@ export function renderStand(params) {
         const motor = board.extraDevices.motor?.getTelemetry?.();
         const audio = board.extraDevices.audio?.getTelemetry?.();
         syncRunButton();
-        runtimeBar.textContent = [
+        const runtimeText = [
             !ok ? "ERROR" : cpu.isRunning() ? "RUNNING" : "READY",
             `PC ${hexWord(cpu.getPC())}`,
             `L${currentPcToLine.find((item) => (item.pc & 0xffff) === (cpu.getPC() & 0xffff))?.line ?? "-"}`,
@@ -786,6 +790,8 @@ export function renderStand(params) {
             `x${currentSpeed}`,
             cpu.isRunning() ? "RUN" : "STOP",
         ].join("   ");
+        if (runtimeBar.textContent !== runtimeText)
+            runtimeBar.textContent = runtimeText;
         syncDeviceBadges();
         renderDebugPanel();
         syncExecMarker();
@@ -1100,16 +1106,22 @@ export function renderStand(params) {
     }
     function draw() {
         const now = performance.now();
-        const dtSeconds = Math.max(0.001, Math.min(0.05, (now - lastFrameTs) / 1000));
-        lastFrameTs = now;
-        board.extraDevices.motor?.advance?.(dtSeconds);
-        liveAudio.update(board.extraDevices.audio?.getTelemetry?.() ?? null);
-        board.render(drawContext, canvas.width, canvas.height);
+        if (now - lastVisualFrameTs >= visualFrameIntervalMs) {
+            const visualDtSeconds = Math.max(0.001, Math.min(0.05, (now - lastVisualFrameTs) / 1000));
+            lastVisualFrameTs = now;
+            board.extraDevices.motor?.advance?.(visualDtSeconds);
+            liveAudio.update(board.extraDevices.audio?.getTelemetry?.() ?? null);
+            const boardVisualRevision = board.getVisualRevision();
+            if (boardVisualRevision !== lastBoardVisualRevision) {
+                board.render(drawContext, canvas.width, canvas.height);
+                lastBoardVisualRevision = boardVisualRevision;
+            }
+            motorPanel.renderFrame(visualDtSeconds);
+        }
         if (!cpu.isRunning() || now - lastUiUpdateTs >= 100) {
             updateRuntimeBar();
             lastUiUpdateTs = now;
         }
-        motorPanel.renderFrame(dtSeconds);
         window.requestAnimationFrame(draw);
     }
     restoreAutosave();
@@ -1147,146 +1159,6 @@ function hexWord(value) {
 function speedToBatch(speed) {
     // 1x should feel close to real board refresh speed.
     return Math.max(1, Math.round(speed * 16700));
-}
-function buildAsmGuideHints(source) {
-    const text = source.replace(/\r/g, "");
-    const hints = [];
-    const labelMap = collectLabels(text);
-    for (const [label, line] of labelMap) {
-        const selfCall = new RegExp(`\\b(?:acall|lcall|call)\\s+${escapeRegExp(label)}\\b`, "i");
-        const labelBlock = extractLabelBlock(text, label);
-        if (labelBlock && selfCall.test(labelBlock)) {
-            hints.push({
-                level: "warning",
-                line,
-                message: `\u041c\u0456\u0442\u043a\u0430 '${label}' \u0432\u0438\u043a\u043b\u0438\u043a\u0430\u0454 \u0441\u0430\u043c\u0443 \u0441\u0435\u0431\u0435. \u0426\u0435 \u0441\u0445\u043e\u0436\u0435 \u043d\u0430 \u0437\u0430\u0446\u0438\u043a\u043b\u0435\u043d\u043d\u044f \u043f\u0456\u0434\u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438. \u0414\u043b\u044f \u0437\u0430\u0442\u0440\u0438\u043c\u043a\u0438 \u043a\u0440\u0430\u0449\u0435 \u0432\u0438\u043a\u043e\u0440\u0438\u0441\u0442\u0430\u0439 DJNZ \u0430\u0431\u043e CALL \u0456\u043d\u0448\u043e\u0457 \u043f\u0456\u0434\u043f\u0440\u043e\u0433\u0440\u0430\u043c\u0438.`,
-            });
-        }
-    }
-    if (/\bpush\b/i.test(text) || /\bpop\b/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "PUSH/POP \u0432 \u0437\u0430\u0442\u0440\u0438\u043c\u043a\u0430\u0445 \u043c\u043e\u0436\u0435 \u0434\u0430\u0442\u0438 stack overflow. \u0427\u0430\u0441\u0442\u0456\u0448\u0435 \u0446\u0435 \u0441\u043b\u0456\u0434 \u0446\u0438\u043a\u043b\u0443 \u0431\u0435\u0437 \u0437\u0431\u0430\u043b\u0430\u043d\u0441\u043e\u0432\u0430\u043d\u0438\u0445 PUSH/POP.",
-        });
-    }
-    if (/\bpush\s+_?temp0\b/i.test(text) || /\bpop\s+_?temp0\b/i.test(text)) {
-        hints.push({
-            level: "warning",
-            message: "\u0417\u043c\u0456\u043d\u043d\u0430 `_Temp0` \u0432 PUSH/POP \u0432\u0438\u0433\u043b\u044f\u0434\u0430\u0454 \u044f\u043a \u043d\u0435\u0432\u0434\u0430\u043b\u0430 \u0437\u0430\u0442\u0440\u0438\u043c\u043a\u0430 \u0432 long-loop. \u041a\u0440\u0430\u0449\u0435: `MOV R2,#...` + `DJNZ R2,label` \u0431\u0435\u0437 PUSH/POP.",
-        });
-    }
-    if (/\bcolumn_1\b/i.test(text) && !/\bwaitrel\b/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "\u0414\u043b\u044f \u0441\u043a\u0430\u043d\u0443\u0432\u0430\u043d\u043d\u044f \u043a\u043b\u0430\u0432\u0456\u0430\u0442\u0443\u0440\u0438 \u0434\u043e\u0434\u0430\u0439 \u043d\u0435\u0432\u0435\u043b\u0438\u043a\u0443 \u0437\u0430\u0442\u0440\u0438\u043c\u043a\u0443 WAITREL, \u0449\u043e\u0431 \u043a\u043d\u043e\u043f\u043a\u0430 \u043d\u0435 \u0437\u0447\u0438\u0442\u0443\u0432\u0430\u043b\u0430\u0441\u044c \u0431\u0430\u0433\u0430\u0442\u043e \u0440\u0430\u0437\u0456\u0432 \u043f\u0456\u0434\u0440\u044f\u0434.",
-        });
-    }
-    if (/\bmov\s+p2\s*,\s*adr\b/i.test(text) && !/\bmov\s+p2\s*,\s*#0x?0+\b/i.test(text)) {
-        hints.push({
-            level: "warning",
-            message: "\u042f\u043a\u0449\u043e \u043f\u0438\u0448\u0435\u0448 \u043d\u0430 LCD/ST841 \u0447\u0435\u0440\u0435\u0437 `MOV P2,ADR`, \u043f\u0456\u0441\u043b\u044f \u0437\u0430\u043f\u0438\u0441\u0443 \u043e\u0431\u043d\u0443\u043b\u0438 latch \u043a\u043e\u043c\u0430\u043d\u0434\u043e\u044e `MOV P2,#0x00`.",
-        });
-    }
-    if (!/\borg\b/i.test(text)) {
-        hints.push({
-            level: "warning",
-            message: "\u041d\u0435\u043c\u0430\u0454 ORG. \u041f\u043e\u0447\u043d\u0438 \u0437 `ORG 0x0000`, \u0449\u043e\u0431 \u0441\u0442\u0430\u0440\u0442 \u043a\u043e\u0434\u0443 \u0431\u0443\u0432 \u0432\u0438\u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0439.",
-        });
-    }
-    if (/\blow\s*\(/i.test(text) || /\bhigh\s*\(/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "LOW()/HIGH() already work for label addresses. Use them for code tables and DPTR setup.",
-        });
-    }
-    if (/\bajmp\b/i.test(text) || /\bacall\b/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "AJMP/ACALL are page-local 2-byte jumps. If the label is farther away, switch to LJMP/LCALL.",
-        });
-    }
-    if (/\bmovc\b/i.test(text) && /\bdptr\b/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "MOVC with DPTR is ready for ROM/code tables: `MOV DPTR,#table`, then `MOVC A,@A+DPTR`.",
-        });
-    }
-    if (/\bmovx\b/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "MOVX is supported for @DPTR and @R0/@R1 forms, useful for XRAM-style code.",
-        });
-    }
-    return hints;
-}
-function buildCGuideHints(source) {
-    const text = source.replace(/\r/g, "");
-    const hints = [];
-    if (/\bswitch\s*\(/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "C helper: switch/case/default/break are supported now and work well for keypad, menus and decoders.",
-        });
-    }
-    if (/\bstruct\b/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "C helper: local struct, nested struct, struct-by-value and p->field are supported.",
-        });
-    }
-    if (/\breturn\s+.+;/i.test(text) || /\b[A-Za-z_]\w+\s*\([^)]*\)/.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "C helper: functions beyond main() now work, including return values and calls inside expressions.",
-        });
-    }
-    if (/\bcode\s*\*/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "C helper: code pointers and calls like foo(table) / table[1] are supported for ROM tables.",
-        });
-    }
-    if (/\bunsigned\s+char\s+\w+\s*\[\s*\d+\s*\]/i.test(text)) {
-        hints.push({
-            level: "hint",
-            message: "C helper: local RAM arrays with initializer and indexed access are supported.",
-        });
-    }
-    return hints;
-}
-function collectLabels(source) {
-    const lines = source.split("\n");
-    const out = new Map();
-    for (let i = 0; i < lines.length; i++) {
-        const clean = lines[i].replace(/;.*$/, "").trim();
-        const m = /^([A-Za-z_.$?][\w.$?]*):/.exec(clean);
-        if (m)
-            out.set(m[1], i + 1);
-    }
-    return out;
-}
-function extractLabelBlock(source, label) {
-    const lines = source.split("\n");
-    let start = -1;
-    for (let i = 0; i < lines.length; i++) {
-        if (new RegExp(`^\\s*${escapeRegExp(label)}\\s*:`).test(lines[i])) {
-            start = i;
-            break;
-        }
-    }
-    if (start < 0)
-        return null;
-    let end = lines.length;
-    for (let i = start + 1; i < lines.length; i++) {
-        if (/^\s*[A-Za-z_.$?][\w.$?]*\s*:/.test(lines[i])) {
-            end = i;
-            break;
-        }
-    }
-    return lines.slice(start, end).join("\n");
-}
-function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function formatCount(value) {
     if (value < 1000)
