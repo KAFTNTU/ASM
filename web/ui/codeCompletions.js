@@ -577,6 +577,14 @@ export function getCodeCompletionResult(source, mode, cursor, limit = 120) {
     const context = getCompletionContext(source, cursor, mode);
     if (!context || (!context.directive && context.query.length < 2) || !context.query)
         return null;
+    // END is a complete, operand-free assembly directive. Once it has been
+    // entered on its own line, keeping the completion list open only obscures
+    // the editor without offering anything useful.
+    if (mode === "asm" && context.query === "end") {
+        const lineBeforeCursor = source.slice(0, cursor).split(/\r?\n/).pop() ?? "";
+        if (/^\s*END\s*$/i.test(lineBeforeCursor))
+            return null;
+    }
     return { ...context, matches: rankCompletions(source, mode, context.query, limit) };
 }
 function rankCompletions(source, mode, query, limit) {

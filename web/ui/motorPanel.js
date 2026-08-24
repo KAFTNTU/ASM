@@ -1,7 +1,7 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/controls/OrbitControls.js";
-import { cloneScopeSignal, drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js";
+import { drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js";
 const FIXED_SHAFT_OFFSET = new THREE.Vector3(-0.082, -0.048, 0.032);
 const FIXED_SHAFT_ROTATION = new THREE.Euler(3.316126, -4.712389, -0.174533, "XYZ");
 export function createMotorPanel(params) {
@@ -509,6 +509,7 @@ export function createMotorPanel(params) {
     }
     function openPanel(source, scopeOnly) {
         activeScopeSource = source;
+        params.setScopeSource?.(source);
         shell.classList.toggle("scope-only", scopeOnly);
         modal.classList.toggle("scope-only-mode", scopeOnly);
         scopeOpen = scopeOnly || scopeOpen;
@@ -549,12 +550,14 @@ export function createMotorPanel(params) {
         shaftMount.rotation.copy(FIXED_SHAFT_ROTATION);
         shaftMount.position.set(shaftBasePosition.x + FIXED_SHAFT_OFFSET.x, shaftBasePosition.y + FIXED_SHAFT_OFFSET.y, shaftBasePosition.z + FIXED_SHAFT_OFFSET.z);
         if (scopeRunning) {
-            frozenScopeSignal = cloneScopeSignal(liveScopeSignal);
+            // getScopeSignal already returns an independent snapshot. Reusing it
+            // avoids cloning thousands of waveform points again on every UI frame.
+            frozenScopeSignal = liveScopeSignal;
         }
         const singleTriggered = triggerSource === "Ext" ||
             hasTriggerEdge(liveScopeSignal, triggerEdge, triggerLevelVolts, singleArmTimeSeconds);
         if (scopeRunning && singleArmed && singleTriggered) {
-            frozenScopeSignal = cloneScopeSignal(liveScopeSignal);
+            frozenScopeSignal = liveScopeSignal;
             scopeRunning = false;
             singleArmed = false;
             syncScopeRunButton();

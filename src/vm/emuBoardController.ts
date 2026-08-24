@@ -31,6 +31,9 @@ export class EmuBoardController {
   private lastAdcLow = -1;
   private lastAdcHigh = -1;
   private batchSize = 184320;
+  private speedMultiplier = 1;
+  private runCycleDebt = 0;
+  private lastRunFrameMs = 0;
   private portLatches = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
   private preTickEffective = { p0: 0xff, p1: 0xff, p2: 0x00, p3: 0xff };
   private static readonly TIMER0_ACCEL = 6;
@@ -38,7 +41,9 @@ export class EmuBoardController {
   private static readonly TRACE_CAPACITY = 400;
   // Keep the browser responsive: the emulator may use only a small part of
   // one animation frame and continues its remaining work on the next frame.
-  private static readonly RUN_FRAME_BUDGET_MS = 6;
+  // Keep each animation-frame slice below the usual 16.7 ms frame interval,
+  // but give the MCU enough CPU time to sustain its real 921.6 kHz cycle rate.
+  private static readonly RUN_FRAME_BUDGET_MS = 12;
   private traceEnabled = false;
   private trace: Array<CpuTraceEntry | undefined> = new Array(
     EmuBoardController.TRACE_CAPACITY,
@@ -104,33 +109,19 @@ export class EmuBoardController {
       // preventing a high-speed program from freezing input and SVG drawing.
       if ((index & 0xff) === 0 && performance.now() >= deadlineMs) break;
       this.board.setSimulationCycle(this.machineCycles);
-      const pc = this.emu.getPC() & 0xffff;
-      const opcode = this.emu.readCode(pc) & 0xff;
-      const op1 = this.emu.readCode((pc + 1) & 0xffff) & 0xff;
-      const isMovAP0 = opcode === 0xe5 && op1 === SFR.p0;
+      const shouldTrace = this.traceEnabled && (
+        !this.running || index % EmuBoardController.TRACE_SAMPLE_WHILE_RUN === 0
+      );
+      // Reading PC/opcode crosses the JS/WASM boundary. Only do it when the
+      // Runner trace is actually visible and this cycle is a trace candidate.
+      const pc = shouldTrace ? this.emu.getPC() & 0xffff : 0;
+      const opcode = shouldTrace ? this.emu.readCode(pc) & 0xff : 0;
       this.syncBoardInputsToCpu();
-      // Make MOV A,P0 always sample live keypad value in RX mode.
-      if (isMovAP0) {
-        const p3 = this.emu.getSfr(SFR.p3) & 0xff;
-        this.board.applyCpuPortValues(
-          this.emu.getSfr(SFR.p0) & 0xff,
-          this.emu.getSfr(SFR.p1) & 0xff,
-          this.emu.getSfr(SFR.p2) & 0xff,
-          p3,
-        );
-        if (((p3 >> 6) & 1) === 0) {
-          this.emu.setSfr(SFR.p0, this.board.readPort("P0"));
-        }
-      }
       const instructionStarted = this.emu.tick();
       this.machineCycles += 1;
       this.board.setSimulationCycle(this.machineCycles);
       if (instructionStarted) {
         this.instructions += 1;
-        const shouldTrace = this.traceEnabled && (
-          !this.running ||
-          index % EmuBoardController.TRACE_SAMPLE_WHILE_RUN === 0
-        );
         if (shouldTrace) {
           this.pushTrace({
             pc,
@@ -141,14 +132,23 @@ export class EmuBoardController {
             tick: this.instructions,
           });
         }
+        // Port latches and board outputs can only change when the CPU actually
+        // starts an instruction. Multi-cycle instructions spend the remaining
+        // ticks only advancing hardware time, so repeating the full board sync
+        // there wastes a large part of the frame budget.
+        this.syncCpuToBoard();
       }
-      this.syncCpuToBoard();
+      // Hardware PWM continues to advance on every machine cycle even while a
+      // multi-cycle CPU instruction is waiting. Keep scope sampling exact, but
+      // avoid the much heavier full board synchronization above.
+      this.servicePwmScope();
       executed += 1;
     }
     return executed;
   }
 
   setSpeed(batchSize: number): void {
+    this.speedMultiplier = Math.max(1 / 16700, Number(batchSize) / 16700);
     this.batchSize = Math.max(1, Math.min(500000, batchSize | 0));
   }
 
@@ -156,10 +156,30 @@ export class EmuBoardController {
     if (!this.emu || this.running) return;
     this.batchSize = Math.max(1, Math.min(500000, batchSize | 0));
     this.running = true;
+    this.runCycleDebt = 0;
+    this.lastRunFrameMs = performance.now();
 
-    const frame = () => {
+    const frame = (frameTimeMs: number) => {
       if (!this.running) return;
-      this.step(this.batchSize, performance.now() + EmuBoardController.RUN_FRAME_BUDGET_MS);
+      // Drive x1 from elapsed wall time instead of assuming that requestAnimationFrame
+      // is always exactly 60 Hz. Missed/slow frames leave a small debt that a later
+      // frame can catch up, so oscilloscope time no longer drifts after a few seconds.
+      const elapsedMs = Math.max(0, Math.min(100, frameTimeMs - this.lastRunFrameMs));
+      this.lastRunFrameMs = frameTimeMs;
+      const targetCyclesPerSecond = ADUC841_MACHINE_CYCLE_HZ * this.speedMultiplier;
+      const maxDebt = targetCyclesPerSecond * 0.25;
+      this.runCycleDebt = Math.min(
+        maxDebt,
+        this.runCycleDebt + (elapsedMs / 1000) * targetCyclesPerSecond,
+      );
+      const requestedCycles = Math.min(500000, Math.floor(this.runCycleDebt));
+      if (requestedCycles > 0) {
+        const completedCycles = this.step(
+          requestedCycles,
+          performance.now() + EmuBoardController.RUN_FRAME_BUDGET_MS,
+        );
+        this.runCycleDebt = Math.max(0, this.runCycleDebt - completedCycles);
+      }
       this.rafId = window.requestAnimationFrame(frame);
     };
 
@@ -168,6 +188,8 @@ export class EmuBoardController {
 
   stop(): void {
     this.running = false;
+    this.runCycleDebt = 0;
+    this.lastRunFrameMs = 0;
     if (this.rafId) {
       window.cancelAnimationFrame(this.rafId);
       this.rafId = 0;
@@ -303,7 +325,6 @@ export class EmuBoardController {
       this.portLatches.p2,
       this.portLatches.p3,
     );
-    this.servicePwmScope();
     this.serviceAudio();
   }
 

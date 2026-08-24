@@ -99,6 +99,11 @@ assert.equal(headerResult.replaceStart, 4, "An indented include must preserve in
 assert.ok(headerResult.matches.some((item) => item.insertText === "#include <ADUC841.H>"));
 
 const asmSource = `START:\nVALUE EQU 1\nSFR CUSTOM = 80H\nFLAG SBIT P1.0`;
+assert.equal(
+  completions.getCodeCompletionResult("END", "asm", 3, 20),
+  null,
+  "A complete END directive must close the autocomplete menu",
+);
 for (const symbol of ["START", "VALUE", "CUSTOM", "FLAG"]) {
   const matches = completions.getCodeCompletions("asm", asmSource, symbol.slice(0, 3), 100);
   assert.ok(matches.some((item) => item.insertText === symbol && item.dynamic), `Missing dynamic ASM symbol ${symbol}`);

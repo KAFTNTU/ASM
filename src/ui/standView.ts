@@ -22,12 +22,18 @@ export function renderStand(params) {
     const cpu = new EmuBoardController(board);
     const liveAudio = new LiveAudioMonitor();
     const root = el("div", { class: "minimalShell" });
+    let uiTheme = localStorage.getItem("st841.ui.theme") === "light" ? "light" : "dark";
+    root.dataset.theme = uiTheme;
+    document.documentElement.style.colorScheme = uiTheme;
     const windowCard = el("div", { class: "windowCard" });
     root.appendChild(windowCard);
     const toolbar = el("div", { class: "toolbar" });
     const runBtn = button("Start", "green");
     const resetBtn = button("Reset");
     const stepBtn = button("Step");
+    runBtn.classList.add("runControl");
+    resetBtn.classList.add("resetControl");
+    stepBtn.classList.add("stepControl");
     const traceBtn = button("Runner");
     const oscilloscopeBtn = button("\u041e\u0441\u0446\u0438\u043b\u043e\u0433\u0440\u0430\u0444");
     const logicEditorBtn = button("Логічні схеми");
@@ -48,6 +54,9 @@ export function renderStand(params) {
     fileMenu.append(openFileBtn, downloadFileBtn, autosaveBtn);
     fileMenuWrap.append(fileMenuBtn, fileMenu, fileInput);
     const speedGroup = el("div", { class: "speedGroup" });
+    const speedLabel = el("span", { class: "speedLabel" });
+    speedLabel.textContent = "Швидкість";
+    speedGroup.appendChild(speedLabel);
     const speedMultipliers = [1, 10, 100, 1000, 10000];
     const speedButtons = speedMultipliers.map((speed) => {
         const node = button(String(speed), speed === 1 ? "speed active" : "speed");
@@ -57,7 +66,15 @@ export function renderStand(params) {
     });
     const fullscreenBtn = button("⛶", "fullscreenBtn");
     fullscreenBtn.title = "Повноекранний режим";
-    toolbar.append(runBtn, resetBtn, stepBtn, fileNameInput, modeSelect, fileMenuWrap, traceBtn, oscilloscopeBtn, logicEditorBtn, speedGroup, fullscreenBtn);
+    const themeBtn = button("☀", "themeBtn");
+    const runGroup = el("div", { class: "toolbarGroup runGroup" });
+    runGroup.append(runBtn, resetBtn, stepBtn);
+    const projectGroup = el("div", { class: "toolbarGroup projectGroup" });
+    projectGroup.append(fileNameInput, modeSelect, fileMenuWrap);
+    const toolsGroup = el("div", { class: "toolbarGroup toolsGroup" });
+    toolsGroup.append(traceBtn, oscilloscopeBtn, logicEditorBtn);
+    toolbar.append(runGroup, projectGroup, toolsGroup, speedGroup, themeBtn, fullscreenBtn);
+    syncThemeButton();
     windowCard.appendChild(toolbar);
     const debugModal = el("div", { class: "debugModal hidden" });
     const debugCard = el("div", { class: "debugCard" });
@@ -76,6 +93,7 @@ export function renderStand(params) {
         audio: board.extraDevices.audio,
         getScopeSignal: (source) => board.scope.getSignal(source),
         setScopeRecording: (enabled) => board.scope.setRecordingEnabled(enabled),
+        setScopeSource: (source) => board.scope.setActiveSource(source),
     });
     // Do not accumulate high-frequency scope samples until the user opens it.
     board.scope.setRecordingEnabled(false);
@@ -648,6 +666,9 @@ export function renderStand(params) {
     fullscreenBtn.addEventListener("click", () => {
         toggleSimulatorFullscreen();
     });
+    themeBtn.addEventListener("click", () => {
+        setUiTheme(uiTheme === "dark" ? "light" : "dark");
+    });
     document.addEventListener("fullscreenchange", syncFullscreenButton);
     motorWrap.addEventListener("click", () => {
         motorPanel.open("motor");
@@ -777,7 +798,12 @@ export function renderStand(params) {
         if (expand) {
             messagesBody.scrollTop = 0;
         }
-        statusStrip.textContent = summary;
+        if (summary === "errors" || errors > 0) {
+            statusStrip.innerHTML = `<span class="statusErrorLabel">Errors: ${errors}</span>`;
+        }
+        else {
+            statusStrip.textContent = summary;
+        }
     }
     function updateRuntimeBar(ok = true) {
         isRunning = cpu.isRunning();
@@ -970,7 +996,7 @@ export function renderStand(params) {
             ["source", motor ? motor.sourceLabel : "-"],
         ]))}
 
-          ${card("LCD cells", `<pre class="runnerPre mono">${escapeHtml(lcdRows.join("\n") || "-")}</pre>`)}
+          ${card("LCD cells", `<pre class="runnerPre mono">${escapeHtml(lcdRows.join("\n") || "-")}</pre>`, "runnerLcdCard")}
 
           ${card("\u0421\u0442\u0435\u043a", smallTable(stackRows, ["Addr", "Value", "Mark"]))}
 
@@ -998,7 +1024,7 @@ export function renderStand(params) {
     }
     function syncRunButton() {
         runBtn.textContent = isRunning ? "Stop" : "Start";
-        runBtn.className = `topBtn ${isRunning ? "red" : "green"}`;
+        runBtn.className = `topBtn runControl ${isRunning ? "red" : "green"}`;
     }
     async function toggleSimulatorFullscreen() {
         try {
@@ -1019,6 +1045,20 @@ export function renderStand(params) {
         fullscreenBtn.textContent = active ? "🗗" : "⛶";
         fullscreenBtn.title = active ? "Вийти з повноекранного режиму" : "Повноекранний режим";
         fullscreenBtn.classList.toggle("active", active);
+    }
+    function setUiTheme(theme) {
+        uiTheme = theme === "light" ? "light" : "dark";
+        root.dataset.theme = uiTheme;
+        document.documentElement.style.colorScheme = uiTheme;
+        localStorage.setItem("st841.ui.theme", uiTheme);
+        syncThemeButton();
+    }
+    function syncThemeButton() {
+        const light = uiTheme === "light";
+        themeBtn.textContent = light ? "☾" : "☀";
+        themeBtn.title = light ? "Увімкнути темну тему" : "Увімкнути світлу тему";
+        themeBtn.setAttribute("aria-label", themeBtn.title);
+        themeBtn.classList.toggle("active", light);
     }
     function setSpeed(speed) {
         currentSpeed = speed;

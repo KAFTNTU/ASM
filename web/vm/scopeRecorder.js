@@ -2,6 +2,7 @@ export const ADUC841_XTAL_HZ = 11059200;
 export const ADUC841_MACHINE_CYCLE_HZ = ADUC841_XTAL_HZ / 12;
 const MAX_SAMPLES_PER_SOURCE = 25000;
 const MAX_HISTORY_SECONDS = 120;
+const SAMPLE_TRIM_CHUNK = 2048;
 const EPSILON = 1e-9;
 /**
  * Event-based signal history for the virtual ST841/ADuC841 stand.
@@ -14,6 +15,15 @@ export class ScopeRecorder {
         this.cycle = 0;
         this.traces = new Map();
         this.recordingEnabled = true;
+        this.activeSource = null;
+    }
+    /** Record only the channel currently connected to the oscilloscope. */
+    setActiveSource(source) {
+        const next = String(source);
+        if (next === this.activeSource)
+            return;
+        this.activeSource = next;
+        this.traces.clear();
     }
     /** Keep fast PWM/DAC history off until the oscilloscope is opened. */
     setRecordingEnabled(enabled) {
@@ -51,6 +61,8 @@ export class ScopeRecorder {
         if (!this.recordingEnabled)
             return;
         const key = String(source);
+        if (this.activeSource != null && key !== this.activeSource)
+            return;
         const timeSeconds = Math.max(0, cycle) / ADUC841_MACHINE_CYCLE_HZ;
         const value = Number.isFinite(voltage) ? voltage : 0;
         let samples = this.traces.get(key);
@@ -89,7 +101,9 @@ export class ScopeRecorder {
         if (remove > 0)
             samples.splice(0, remove);
         if (samples.length > MAX_SAMPLES_PER_SOURCE) {
-            samples.splice(0, samples.length - MAX_SAMPLES_PER_SOURCE);
+            // Removing one item for every new transition makes fast GPIO signals
+            // progressively slower once the history is full. Evict a block instead.
+            samples.splice(0, Math.max(SAMPLE_TRIM_CHUNK, samples.length - MAX_SAMPLES_PER_SOURCE));
         }
     }
 }

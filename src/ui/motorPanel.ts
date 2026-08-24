@@ -5,7 +5,6 @@ import type { PwmMotor } from "../vm/devices/pwmMotor";
 import type { AudioCodec } from "../vm/devices/audioCodec";
 import type { ScopeSignalSnapshot } from "../vm/scopeRecorder";
 import {
-  cloneScopeSignal,
   drawRecordedScope,
   emptyScopeSignal,
   hasTriggerEdge,
@@ -60,6 +59,7 @@ export function createMotorPanel(params: {
   audio?: AudioCodec;
   getScopeSignal?(source: ScopeSource): ScopeSignal;
   setScopeRecording?(enabled: boolean): void;
+  setScopeSource?(source: ScopeSource): void;
 }): MotorPanelController {
   const { motor, audio } = params;
 
@@ -641,6 +641,7 @@ export function createMotorPanel(params: {
 
   function openPanel(source: ScopeSource, scopeOnly: boolean): void {
     activeScopeSource = source;
+    params.setScopeSource?.(source);
     shell.classList.toggle("scope-only", scopeOnly);
     modal.classList.toggle("scope-only-mode", scopeOnly);
     scopeOpen = scopeOnly || scopeOpen;
@@ -687,13 +688,15 @@ export function createMotorPanel(params: {
       shaftBasePosition.z + FIXED_SHAFT_OFFSET.z,
     );
     if (scopeRunning) {
-      frozenScopeSignal = cloneScopeSignal(liveScopeSignal);
+      // getScopeSignal already returns an independent snapshot. Reusing it
+      // avoids cloning thousands of waveform points again on every UI frame.
+      frozenScopeSignal = liveScopeSignal;
     }
     const singleTriggered =
       triggerSource === "Ext" ||
       hasTriggerEdge(liveScopeSignal, triggerEdge, triggerLevelVolts, singleArmTimeSeconds);
     if (scopeRunning && singleArmed && singleTriggered) {
-      frozenScopeSignal = cloneScopeSignal(liveScopeSignal);
+      frozenScopeSignal = liveScopeSignal;
       scopeRunning = false;
       singleArmed = false;
       syncScopeRunButton();

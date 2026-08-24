@@ -111,6 +111,11 @@ input {
   cursor: pointer;
 }
 
+.samplePicker option {
+  color: #101722;
+  background: #f4f6f9;
+}
+
 .toolbar > .topBtn:first-child {
   width: 76px;
   min-width: 76px;
@@ -159,6 +164,24 @@ input {
   color: #d8e7fb;
   background: #162031;
   border-color: rgba(255,255,255,0.11);
+}
+
+.topBtn.themeBtn {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 17px;
+  line-height: 1;
+  color: #ffd477;
+  background: #111b29;
+}
+
+.topBtn.themeBtn.active {
+  color: #25354b;
+  background: #e8eef6;
+  border-color: rgba(37, 53, 75, 0.2);
 }
 
 .topBtn.fullscreenBtn.active {
@@ -448,7 +471,7 @@ input {
 .editorBox {
   height: 100%;
   display: grid;
-  grid-template-rows: 28px minmax(0, 1fr) 24px;
+  grid-template-rows: 28px minmax(0, 1fr) 16px;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 8px;
   overflow: hidden;
@@ -903,7 +926,7 @@ input {
 .statusStrip {
   display: flex;
   align-items: center;
-  padding: 0 10px;
+  padding: 0 7px;
   border-top: 1px solid var(--line);
   background: #181f29;
   white-space: nowrap;
@@ -911,6 +934,11 @@ input {
   text-overflow: ellipsis;
   user-select: none;
   -webkit-user-select: none;
+}
+
+.statusErrorLabel {
+  color: #ff5f68;
+  font-weight: 800;
 }
 
 .splitHandle {
@@ -2040,6 +2068,15 @@ body.panel-resizing {
   scrollbar-color: #4a607c #101827;
 }
 
+.runnerLcdCard .runnerPre {
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 @media (max-width: 900px) {
   .debugCard {
     width: 100%;
@@ -3011,4 +3048,529 @@ body.panel-resizing {
 .logicStatusLeft.hasIssues {
   color: #a33b3b;
   font-weight: 800;
+}
+
+/* 2026 workstation refresh: compact laboratory UI without changing behavior. */
+:root {
+  --bg: #080c12;
+  --panel: #151c27;
+  --panel-2: #101722;
+  --panel-3: #0a1018;
+  --line: rgba(150, 174, 207, 0.13);
+  --text: #edf4ff;
+  --muted: #8998ad;
+  --ok: #4fc77c;
+  --bad: #e05a62;
+  --blue: #62a4ff;
+  --messages-height: 32px;
+}
+
+html,
+body {
+  background:
+    radial-gradient(circle at 15% -20%, rgba(47, 91, 143, 0.16), transparent 38%),
+    #080c12;
+}
+
+.windowCard,
+.windowCard:fullscreen {
+  background: linear-gradient(180deg, #121924, #0b1119);
+}
+
+.windowCard {
+  grid-template-rows: 58px minmax(0, 1fr) 12px var(--messages-height);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+}
+
+.toolbar {
+  gap: 9px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(111, 151, 204, 0.2);
+  background: linear-gradient(180deg, rgba(28, 38, 52, 0.98), rgba(17, 24, 34, 0.98));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  z-index: 30;
+}
+
+.toolbarGroup {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid rgba(144, 169, 202, 0.1);
+  border-radius: 11px;
+  background: rgba(7, 12, 19, 0.36);
+}
+
+.topBtn,
+.samplePicker {
+  height: 32px;
+  padding: 0 11px;
+  border-color: rgba(148, 174, 208, 0.14);
+  background: linear-gradient(180deg, #253143, #1b2533);
+  transition: transform 100ms ease, border-color 100ms ease, background 100ms ease, box-shadow 100ms ease;
+}
+
+.toolbar > .topBtn:first-child {
+  width: auto;
+  min-width: 0;
+  padding: 0;
+}
+
+.runGroup .runControl {
+  width: 72px;
+  min-width: 72px;
+  padding: 0;
+  font-weight: 750;
+}
+
+.topBtn.green {
+  color: #07140c;
+  background: linear-gradient(180deg, #66d990, #42ae6c);
+  border-color: rgba(125, 238, 164, 0.58);
+  box-shadow: 0 5px 16px rgba(49, 171, 99, 0.18);
+}
+
+.topBtn.red {
+  color: #fff;
+  background: linear-gradient(180deg, #e2676c, #b6424a);
+  border-color: rgba(255, 140, 145, 0.5);
+}
+
+.topBtn:hover {
+  filter: brightness(1.08);
+  border-color: rgba(159, 194, 237, 0.3);
+  transform: translateY(-1px);
+}
+
+.topBtn:active {
+  transform: translateY(0);
+}
+
+.speedGroup {
+  padding: 4px;
+  border-radius: 11px;
+  background: rgba(7, 12, 19, 0.48);
+  border-color: rgba(144, 169, 202, 0.12);
+}
+
+.speedLabel {
+  padding: 0 7px 0 5px;
+  color: #71839b;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.topBtn.speed.active {
+  background: linear-gradient(180deg, #3971b3, #294f7e);
+  border-color: rgba(126, 181, 255, 0.36);
+  box-shadow: 0 0 0 1px rgba(70, 146, 238, 0.1), 0 4px 12px rgba(20, 82, 151, 0.2);
+}
+
+.topBtn.fullscreenBtn {
+  height: 34px;
+  border-radius: 10px;
+  background: #111b29;
+}
+
+.mainRow {
+  grid-template-columns: minmax(288px, 29%) minmax(0, 1fr);
+  background:
+    radial-gradient(circle at 11% 22%, rgba(42, 104, 83, 0.1), transparent 25%),
+    #0a1018;
+}
+
+.boardPane,
+.editorPane {
+  padding: 4px;
+}
+
+.editorPane {
+  padding: 0;
+}
+
+.boardPane {
+  background: linear-gradient(180deg, rgba(15, 23, 33, 0.78), rgba(8, 14, 21, 0.7));
+}
+
+.boardSurfaceMini {
+  border-radius: 14px;
+  border-color: rgba(112, 179, 156, 0.2);
+  box-shadow:
+    0 24px 50px rgba(0, 0, 0, 0.32),
+    0 0 0 1px rgba(38, 124, 100, 0.08);
+}
+
+.boardBox {
+  background: linear-gradient(180deg, rgba(4, 15, 19, 0.88), rgba(3, 11, 15, 0.8));
+  border-color: rgba(154, 213, 194, 0.16);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+}
+
+.editorBox {
+  grid-template-rows: 34px minmax(0, 1fr) 16px;
+  border-color: rgba(124, 154, 194, 0.16);
+  border-radius: 0;
+  box-shadow: 0 22px 50px rgba(0, 0, 0, 0.24);
+}
+
+.editorTopMini {
+  padding: 0 12px;
+  background: linear-gradient(180deg, #1d2735, #17202c);
+  border-bottom-color: rgba(120, 151, 192, 0.16);
+}
+
+.editorTag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 21px;
+  padding: 0 8px;
+  border: 1px solid rgba(104, 165, 241, 0.16);
+  border-radius: 6px;
+  color: #bcd8ff;
+  background: rgba(72, 135, 215, 0.14);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.editorShell {
+  background: #0b1119;
+}
+
+.lineNumbers {
+  color: #60718a;
+  background: #0e1621;
+}
+
+.fileNameInput {
+  background: #111a27;
+}
+
+.statusStrip {
+  color: #8091a8;
+  background: linear-gradient(180deg, #151e2a, #111923);
+}
+
+.splitHandle {
+  background: #0c131c;
+}
+
+.splitDot {
+  background: rgba(99, 144, 200, 0.32);
+}
+
+.messagesPane {
+  background: #0d141e;
+  grid-template-rows: 30px minmax(0, 1fr);
+}
+
+.messagesHead {
+  background: linear-gradient(180deg, #172130, #121b27);
+}
+
+.messagesTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 650;
+}
+
+.messagesTitle::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #54d4da;
+  box-shadow: 0 0 10px rgba(84, 212, 218, 0.55);
+}
+
+@media (max-width: 1450px) {
+  .toolbar {
+    gap: 6px;
+    padding-inline: 9px;
+  }
+
+  .speedLabel {
+    display: none;
+  }
+
+  .toolsGroup .topBtn {
+    padding-inline: 8px;
+  }
+
+  .runGroup .topBtn:not(.runControl),
+  .projectGroup .topBtn {
+    padding-inline: 8px;
+  }
+
+  .fileNameInput {
+    width: 82px;
+  }
+
+  .topBtn.speed {
+    min-width: 36px;
+    padding-inline: 5px;
+  }
+}
+
+/* Light workstation theme. The virtual hardware itself keeps its real dark PCB colors. */
+.minimalShell[data-theme="light"] {
+  --bg: #c7d2df;
+  --panel: #d8e1eb;
+  --panel-2: #ccd7e3;
+  --panel-3: #e0e7ef;
+  --line: rgba(50, 70, 96, 0.17);
+  --text: #1b293a;
+  --muted: #64758b;
+  color: var(--text);
+  background: #c7d2df;
+}
+
+.minimalShell[data-theme="light"] .windowCard,
+.minimalShell[data-theme="light"] .windowCard:fullscreen {
+  background: #c8d3df;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .toolbar {
+  border-bottom-color: rgba(53, 77, 108, 0.2);
+  background: linear-gradient(180deg, #dde5ee, #c9d4e0);
+  box-shadow: 0 5px 18px rgba(47, 66, 91, 0.12);
+}
+
+.minimalShell[data-theme="light"] .toolbarGroup,
+.minimalShell[data-theme="light"] .speedGroup {
+  border-color: rgba(53, 77, 108, 0.16);
+  background: rgba(225, 233, 242, 0.78);
+}
+
+.minimalShell[data-theme="light"] .topBtn,
+.minimalShell[data-theme="light"] .samplePicker,
+.minimalShell[data-theme="light"] .fileNameInput {
+  color: #243348;
+  border-color: rgba(56, 78, 107, 0.2);
+  background: linear-gradient(180deg, #e7edf4, #d3dde8);
+  box-shadow: 0 2px 5px rgba(45, 63, 88, 0.08);
+}
+
+.minimalShell[data-theme="light"] .topBtn.green {
+  color: #092414;
+  background: linear-gradient(180deg, #72dda0, #50bd7b);
+  border-color: rgba(38, 135, 78, 0.34);
+}
+
+.minimalShell[data-theme="light"] .topBtn.red {
+  color: #fff;
+  background: linear-gradient(180deg, #e66f75, #bd474f);
+}
+
+.minimalShell[data-theme="light"] .topBtn.speed {
+  color: #52647b;
+  background: transparent;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .topBtn.speed.active {
+  color: #fff;
+  background: linear-gradient(180deg, #4d83c5, #37669f);
+}
+
+.minimalShell[data-theme="light"] .speedLabel {
+  color: #61738a;
+}
+
+.minimalShell[data-theme="light"] .mainRow {
+  background: #c4cfdb;
+}
+
+.minimalShell[data-theme="light"] .boardPane {
+  border-right-color: rgba(57, 79, 106, 0.18);
+  background: linear-gradient(180deg, #cdd8e3, #becad7);
+}
+
+.minimalShell[data-theme="light"] .editorBox {
+  border-color: rgba(55, 76, 103, 0.2);
+  box-shadow: 0 12px 30px rgba(56, 73, 96, 0.12);
+}
+
+.minimalShell[data-theme="light"] .editorTopMini {
+  color: #314258;
+  border-bottom-color: rgba(55, 76, 103, 0.17);
+  background: linear-gradient(180deg, #dce5ee, #ccd7e2);
+}
+
+.minimalShell[data-theme="light"] .editorTag {
+  color: #245b9d;
+  border-color: rgba(50, 112, 184, 0.2);
+  background: rgba(65, 132, 210, 0.1);
+}
+
+.minimalShell[data-theme="light"] .editorShell,
+.minimalShell[data-theme="light"] .editorStack {
+  background: #d8e2ec;
+}
+
+.minimalShell[data-theme="light"] .lineNumbers,
+.minimalShell[data-theme="light"] .execMarker {
+  color: #77869a;
+  border-color: rgba(55, 76, 103, 0.1);
+  background: #cbd6e1;
+}
+
+.minimalShell[data-theme="light"] .editorText {
+  caret-color: #172235;
+}
+
+.minimalShell[data-theme="light"] .codeHighlight,
+.minimalShell[data-theme="light"] .tok-ident {
+  color: #26384d;
+}
+
+.minimalShell[data-theme="light"] .tok-key { color: #155eb2; }
+.minimalShell[data-theme="light"] .tok-reg,
+.minimalShell[data-theme="light"] .tok-type { color: #087f6d; }
+.minimalShell[data-theme="light"] .tok-num,
+.minimalShell[data-theme="light"] .tok-char,
+.minimalShell[data-theme="light"] .tok-label { color: #95620a; }
+.minimalShell[data-theme="light"] .tok-comment { color: #748297; }
+.minimalShell[data-theme="light"] .tok-str { color: #814ca3; }
+.minimalShell[data-theme="light"] .tok-macro,
+.minimalShell[data-theme="light"] .tok-pre { color: #a04d19; }
+.minimalShell[data-theme="light"] .tok-fn { color: #08759b; }
+.minimalShell[data-theme="light"] .tok-op { color: #586a80; }
+
+.minimalShell[data-theme="light"] .editorScrollSlider {
+  border-left-color: rgba(55, 76, 103, 0.14);
+  background: #c4cfdb;
+}
+
+.minimalShell[data-theme="light"] .statusStrip,
+.minimalShell[data-theme="light"] .messagesPane {
+  color: #62748a;
+  background: #d2dce7;
+}
+
+.minimalShell[data-theme="light"] .splitHandle {
+  background: #b9c6d4;
+}
+
+.minimalShell[data-theme="light"] .messagesHead {
+  color: #243348;
+  background: linear-gradient(180deg, #dae3ec, #c8d3df);
+}
+
+.minimalShell[data-theme="light"] .messagesTitle,
+.minimalShell[data-theme="light"] .messagesMeta {
+  color: #34475e;
+}
+
+.minimalShell[data-theme="light"] .messagesBody,
+.minimalShell[data-theme="light"] .fileMenu {
+  color: #26384d;
+  border-color: rgba(55, 76, 103, 0.18);
+  background: #d8e2ec;
+}
+
+.minimalShell[data-theme="light"] .fileMenuItem,
+.minimalShell[data-theme="light"] .autosaveMenuItem,
+.minimalShell[data-theme="light"] .autosaveMenuItem.saved,
+.minimalShell[data-theme="light"] .autosaveMenuItem.dirty,
+.minimalShell[data-theme="light"] .autosaveMenuItem.disabled {
+  color: #243348;
+}
+
+.minimalShell[data-theme="light"] .fileMenuItem:hover {
+  background: rgba(48, 91, 143, 0.1);
+}
+
+.minimalShell[data-theme="light"] .debugCard,
+.minimalShell[data-theme="light"] .debugBody {
+  color: #293b50;
+  border-color: rgba(55, 76, 103, 0.18);
+  background: #d1dce7;
+}
+
+.minimalShell[data-theme="light"] .debugHead {
+  border-bottom-color: rgba(55, 76, 103, 0.16);
+  background: #dae3ec;
+}
+
+.minimalShell[data-theme="light"] .debugTitle {
+  color: #26384d;
+}
+
+.minimalShell[data-theme="light"] .runnerHero,
+.minimalShell[data-theme="light"] .runnerCard {
+  color: #293b50;
+  border-color: rgba(55, 76, 103, 0.15);
+  background: #dbe4ed;
+}
+
+.minimalShell[data-theme="light"] .runnerCard h3,
+.minimalShell[data-theme="light"] .runnerInstruction {
+  color: #1f3146;
+}
+
+.minimalShell[data-theme="light"] .runnerLabel,
+.minimalShell[data-theme="light"] .runnerKv span,
+.minimalShell[data-theme="light"] .runnerSub {
+  color: #405a77;
+}
+
+.minimalShell[data-theme="light"] .runnerKv b,
+.minimalShell[data-theme="light"] .runnerStatusBox,
+.minimalShell[data-theme="light"] .runnerTable td,
+.minimalShell[data-theme="light"] .runnerTrace td {
+  color: #142a43;
+}
+
+.minimalShell[data-theme="light"] .runnerKv.ok b {
+  color: #126b3a;
+}
+
+.minimalShell[data-theme="light"] .runnerKv.warn b {
+  color: #8a4d00;
+}
+
+.minimalShell[data-theme="light"] .runnerTable th,
+.minimalShell[data-theme="light"] .runnerTrace th {
+  color: #34536f;
+  background: rgba(73, 104, 137, 0.09);
+}
+
+.minimalShell[data-theme="light"] .runnerSourceLine {
+  color: #644400;
+  border-color: rgba(157, 111, 14, 0.3);
+  background: rgba(255, 216, 116, 0.28);
+}
+
+.minimalShell[data-theme="light"] .runnerPill.run {
+  color: #0f6737;
+  border-color: rgba(15, 103, 55, 0.3);
+  background: rgba(52, 171, 103, 0.16);
+}
+
+.minimalShell[data-theme="light"] .runnerPill.stop {
+  color: #815000;
+  border-color: rgba(129, 80, 0, 0.28);
+  background: rgba(223, 159, 43, 0.18);
+}
+
+.minimalShell[data-theme="light"] .runnerHr {
+  border-top-color: rgba(55, 76, 103, 0.16);
+}
+
+.minimalShell[data-theme="light"] .runnerPre {
+  color: #17314d;
+  border-color: rgba(47, 72, 101, 0.24);
+  background: #c5d2df;
+}
+
+.minimalShell[data-theme="light"] .runnerKv,
+.minimalShell[data-theme="light"] .runnerTable td,
+.minimalShell[data-theme="light"] .runnerTable th,
+.minimalShell[data-theme="light"] .runnerTrace td,
+.minimalShell[data-theme="light"] .runnerTrace th {
+  border-color: rgba(55, 76, 103, 0.12);
 }
