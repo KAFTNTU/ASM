@@ -754,10 +754,6 @@ export function renderStand(params) {
     });
     modeSelect.addEventListener("change", () => {
         const nextMode = modeSelect.value === "c" ? "c" : "asm";
-        if (nextMode !== sourceMode && editor.value) {
-            editor.value = "";
-            updateLineNumbers();
-        }
         sourceMode = nextMode;
         closeAutocomplete();
         modeTag.textContent = sourceMode.toUpperCase();
