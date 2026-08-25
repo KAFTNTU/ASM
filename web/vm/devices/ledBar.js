@@ -20,9 +20,12 @@ export class LedBar {
             const cy = y + 28;
             ctx.beginPath();
             ctx.arc(cx, cy, 10, 0, Math.PI * 2);
-            ctx.fillStyle = on ? "rgba(120, 255, 140, 1)" : "rgba(45, 60, 62, 0.45)";
+            ctx.shadowColor = on ? "rgba(255, 55, 48, 0.9)" : "transparent";
+            ctx.shadowBlur = on ? 12 : 0;
+            ctx.fillStyle = on ? "rgba(255, 69, 63, 1)" : "rgba(45, 50, 56, 0.5)";
             ctx.fill();
-            ctx.strokeStyle = on ? "rgba(210, 255, 220, 1)" : "rgba(120, 140, 140, 0.35)";
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = on ? "rgba(255, 181, 176, 1)" : "rgba(120, 130, 140, 0.35)";
             ctx.stroke();
         }
         ctx.restore();

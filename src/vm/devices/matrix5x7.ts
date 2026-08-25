@@ -77,9 +77,12 @@ export class Matrix5x7 {
         const cy = y + padY + (rows - 1 - r) * stepY;
         ctx.beginPath();
         ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        ctx.fillStyle = on ? "rgba(122,162,255,0.95)" : "rgba(255,255,255,0.10)";
+        ctx.shadowColor = on ? "rgba(255, 55, 48, 0.9)" : "transparent";
+        ctx.shadowBlur = on ? 10 : 0;
+        ctx.fillStyle = on ? "rgba(255,69,63,1)" : "rgba(255,255,255,0.10)";
         ctx.fill();
-        ctx.strokeStyle = on ? "rgba(122,162,255,0.75)" : "rgba(255,255,255,0.16)";
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = on ? "rgba(255,181,176,0.95)" : "rgba(255,255,255,0.16)";
         ctx.stroke();
       }
     }

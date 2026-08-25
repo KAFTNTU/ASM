@@ -1,4 +1,4 @@
-const SEG_ON = "rgba(255,204,102,0.95)";
+const SEG_ON = "rgba(255,69,63,1)";
 const SEG_OFF = "rgba(255,255,255,0.10)";
 class SevenSegDigit {
     constructor(state) {
@@ -42,8 +42,12 @@ export class SevenSeg4 {
         const h = 58;
         const t = 6;
         const rect = (rx, ry, rw, rh, c) => {
+            const on = c === SEG_ON;
+            ctx.shadowColor = on ? "rgba(255, 55, 48, 0.9)" : "transparent";
+            ctx.shadowBlur = on ? 10 : 0;
             ctx.fillStyle = c;
             ctx.fillRect(rx, ry, rw, rh);
+            ctx.shadowBlur = 0;
         };
         rect(x + t, y, w - 2 * t, t, seg(0)); // a
         rect(x + w - t, y + t, t, h / 2 - t, seg(1)); // b
@@ -54,7 +58,11 @@ export class SevenSeg4 {
         rect(x + t, y + h / 2 - t / 2, w - 2 * t, t, seg(6)); // g
         ctx.beginPath();
         ctx.arc(x + w - 2, y + h - 6, 4, 0, Math.PI * 2);
-        ctx.fillStyle = seg(7); // dp
+        const dp = seg(7);
+        ctx.shadowColor = dp === SEG_ON ? "rgba(255, 55, 48, 0.9)" : "transparent";
+        ctx.shadowBlur = dp === SEG_ON ? 10 : 0;
+        ctx.fillStyle = dp; // dp
         ctx.fill();
+        ctx.shadowBlur = 0;
     }
 }

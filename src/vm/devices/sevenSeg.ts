@@ -1,6 +1,6 @@
 import type { BusDevice } from "../peripheralBus";
 
-const SEG_ON = "rgba(255,204,102,0.95)";
+const SEG_ON = "rgba(255,69,63,1)";
 const SEG_OFF = "rgba(255,255,255,0.10)";
 
 type SegState = { raw: number };
@@ -54,8 +54,12 @@ export class SevenSeg4 {
     const t = 6;
 
     const rect = (rx: number, ry: number, rw: number, rh: number, c: string) => {
+      const on = c === SEG_ON;
+      ctx.shadowColor = on ? "rgba(255, 55, 48, 0.9)" : "transparent";
+      ctx.shadowBlur = on ? 10 : 0;
       ctx.fillStyle = c;
       ctx.fillRect(rx, ry, rw, rh);
+      ctx.shadowBlur = 0;
     };
 
     rect(x + t, y, w - 2 * t, t, seg(0)); // a
@@ -68,7 +72,11 @@ export class SevenSeg4 {
 
     ctx.beginPath();
     ctx.arc(x + w - 2, y + h - 6, 4, 0, Math.PI * 2);
-    ctx.fillStyle = seg(7); // dp
+    const dp = seg(7);
+    ctx.shadowColor = dp === SEG_ON ? "rgba(255, 55, 48, 0.9)" : "transparent";
+    ctx.shadowBlur = dp === SEG_ON ? 10 : 0;
+    ctx.fillStyle = dp; // dp
     ctx.fill();
+    ctx.shadowBlur = 0;
   }
 }

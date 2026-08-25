@@ -184,6 +184,25 @@ input {
   border-color: rgba(37, 53, 75, 0.2);
 }
 
+.topBtn.languageBtn {
+  width: 50px;
+  min-width: 50px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,0.11);
+  border-radius: 9px;
+  color: #d8e7fb;
+  background: #162031;
+  font: 700 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-align: center;
+  cursor: pointer;
+}
+
+.topBtn.languageBtn:focus-visible {
+  outline: 2px solid #55a8ff;
+  outline-offset: 1px;
+}
+
 .topBtn.fullscreenBtn.active {
   color: #fff;
   background: #2e4c78;
@@ -466,6 +485,201 @@ input {
   background: radial-gradient(circle at 35% 35%, #ffffff, #92a0b2 48%, #1a2430 100%);
   border: 1px solid rgba(255,255,255,0.22);
   box-shadow: 0 6px 12px rgba(0,0,0,0.4);
+}
+
+/* Minimal instrument-style virtual stand. The device layout and hit areas stay unchanged. */
+.boardPane {
+  background: #0c121a;
+}
+
+.boardSurfaceMini {
+  border-radius: 10px;
+  border: 1px solid #344253;
+  background: #0b1118;
+  box-shadow: none;
+}
+
+.boardBox {
+  border-radius: 7px;
+  border: 1px solid #364454;
+  background: #111923;
+  box-shadow: none;
+  color: #dce4ed;
+  padding: 7px;
+}
+
+.motorBox,
+.audioBox {
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.motorBox:hover,
+.audioBox:hover {
+  transform: none;
+  border-color: #536377;
+  background: #151f2b;
+}
+
+.motorBox.active,
+.audioBox.active {
+  border-color: #6b7d91;
+  background: #18232f;
+  box-shadow: none;
+}
+
+.audioBox {
+  border-radius: 7px;
+  background: #111923;
+}
+
+.boardCaption {
+  color: #dce4ed;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+}
+
+.motorPreview {
+  color: #eef3f8;
+}
+
+.motorHint,
+.audioHint {
+  color: #99a8ba;
+}
+
+.miniKey {
+  border-radius: 4px;
+  border-color: #465568;
+  background: #273241;
+  color: #edf2f7;
+  box-shadow: none;
+}
+
+.miniKey:hover {
+  background: #303c4c;
+}
+
+.miniKey.active {
+  filter: none;
+  background: #3b495b;
+  box-shadow: inset 0 0 0 1px #63758a;
+}
+
+.joystickFaceMini {
+  background: #0c121a;
+  border-color: #3a4859;
+}
+
+.joystickKnobMini {
+  background: #98a6b5;
+  border-color: #c2ccd6;
+  box-shadow: 0 3px 7px rgba(0, 0, 0, 0.28);
+}
+
+.audioSpeaker {
+  background: #0c1219;
+  border-color: #3c4a59;
+  box-shadow: none;
+}
+
+.audioSpeakerCone {
+  background: #202a35;
+  border-color: #4a5868;
+}
+
+.audioSpeakerCap {
+  background: #657384;
+  border-color: #8794a2;
+  box-shadow: none;
+}
+
+.audioSpeakerRing,
+.audioSpeakerRing.ring2 {
+  border-color: #465464;
+}
+
+.audioBox.active .audioSpeakerRing {
+  border-color: #7e8fa2;
+}
+
+.minimalShell[data-theme="light"] .boardPane {
+  background: #c7d1dc;
+}
+
+.minimalShell[data-theme="light"] .boardSurfaceMini {
+  border-color: #8f9eae;
+  background: #c3ced9;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .boardBox {
+  color: #263649;
+  border-color: #9eacbb;
+  background: #e8edf2;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .motorBox:hover,
+.minimalShell[data-theme="light"] .audioBox:hover {
+  border-color: #75879a;
+  background: #f0f3f6;
+}
+
+.minimalShell[data-theme="light"] .motorBox.active,
+.minimalShell[data-theme="light"] .audioBox.active {
+  border-color: #657b92;
+  background: #e2e9f0;
+}
+
+.minimalShell[data-theme="light"] .boardCaption,
+.minimalShell[data-theme="light"] .motorPreview {
+  color: #263649;
+}
+
+.minimalShell[data-theme="light"] .motorHint,
+.minimalShell[data-theme="light"] .audioHint {
+  color: #627386;
+}
+
+.minimalShell[data-theme="light"] .miniKey {
+  color: #273649;
+  border-color: #9caaba;
+  background: #d4dde6;
+}
+
+.minimalShell[data-theme="light"] .miniKey:hover {
+  background: #c8d3de;
+}
+
+.minimalShell[data-theme="light"] .miniKey.active {
+  background: #b9c6d3;
+  box-shadow: inset 0 0 0 1px #8091a4;
+}
+
+.minimalShell[data-theme="light"] .joystickFaceMini {
+  border-color: #97a6b6;
+  background: #c8d2dc;
+}
+
+.minimalShell[data-theme="light"] .joystickKnobMini {
+  border-color: #77889a;
+  background: #f1f4f7;
+  box-shadow: 0 3px 7px rgba(42, 56, 74, 0.18);
+}
+
+.minimalShell[data-theme="light"] .audioSpeaker {
+  border-color: #8999aa;
+  background: #b9c5d0;
+}
+
+.minimalShell[data-theme="light"] .audioSpeakerCone {
+  border-color: #738497;
+  background: #8f9ead;
+}
+
+.minimalShell[data-theme="light"] .audioSpeakerCap {
+  border-color: #56697e;
+  background: #65768a;
 }
 
 .editorBox {
@@ -3191,21 +3405,19 @@ body {
 }
 
 .boardPane {
-  background: linear-gradient(180deg, rgba(15, 23, 33, 0.78), rgba(8, 14, 21, 0.7));
+  background: #0c121a;
 }
 
 .boardSurfaceMini {
-  border-radius: 14px;
-  border-color: rgba(112, 179, 156, 0.2);
-  box-shadow:
-    0 24px 50px rgba(0, 0, 0, 0.32),
-    0 0 0 1px rgba(38, 124, 100, 0.08);
+  border-radius: 10px;
+  border-color: #344253;
+  box-shadow: none;
 }
 
 .boardBox {
-  background: linear-gradient(180deg, rgba(4, 15, 19, 0.88), rgba(3, 11, 15, 0.8));
-  border-color: rgba(154, 213, 194, 0.16);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.28);
+  background: #111923;
+  border-color: #364454;
+  box-shadow: none;
 }
 
 .editorBox {
@@ -3386,7 +3598,7 @@ body {
 
 .minimalShell[data-theme="light"] .boardPane {
   border-right-color: rgba(57, 79, 106, 0.18);
-  background: linear-gradient(180deg, #cdd8e3, #becad7);
+  background: #c7d1dc;
 }
 
 .minimalShell[data-theme="light"] .editorBox {
@@ -3573,4 +3785,86 @@ body {
 .minimalShell[data-theme="light"] .runnerTrace td,
 .minimalShell[data-theme="light"] .runnerTrace th {
   border-color: rgba(55, 76, 103, 0.12);
+}
+
+/* Keep the physical stand readable in the light palette after the shared dark rules. */
+.minimalShell[data-theme="light"] .boardSurfaceMini {
+  border-color: #8f9eae;
+  background: #c3ced9;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .boardBox,
+.minimalShell[data-theme="light"] .audioBox {
+  color: #263649;
+  border-color: #9eacbb;
+  background: #e8edf2;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .motorBox:hover,
+.minimalShell[data-theme="light"] .audioBox:hover {
+  border-color: #75879a;
+  background: #f0f3f6;
+}
+
+.minimalShell[data-theme="light"] .motorBox.active,
+.minimalShell[data-theme="light"] .audioBox.active {
+  border-color: #657b92;
+  background: #e2e9f0;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .boardCaption,
+.minimalShell[data-theme="light"] .motorPreview {
+  color: #263649;
+}
+
+.minimalShell[data-theme="light"] .motorHint,
+.minimalShell[data-theme="light"] .audioHint {
+  color: #627386;
+}
+
+.minimalShell[data-theme="light"] .miniKey {
+  color: #273649;
+  border-color: #9caaba;
+  background: #d4dde6;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .miniKey:hover {
+  background: #c8d3de;
+}
+
+.minimalShell[data-theme="light"] .miniKey.active {
+  background: #b9c6d3;
+  box-shadow: inset 0 0 0 1px #8091a4;
+}
+
+.minimalShell[data-theme="light"] .joystickFaceMini {
+  border-color: #97a6b6;
+  background: #c8d2dc;
+}
+
+.minimalShell[data-theme="light"] .joystickKnobMini {
+  border-color: #77889a;
+  background: #f1f4f7;
+  box-shadow: 0 3px 7px rgba(42, 56, 74, 0.18);
+}
+
+.minimalShell[data-theme="light"] .audioSpeaker {
+  border-color: #8999aa;
+  background: #b9c5d0;
+  box-shadow: none;
+}
+
+.minimalShell[data-theme="light"] .audioSpeakerCone {
+  border-color: #738497;
+  background: #8f9ead;
+}
+
+.minimalShell[data-theme="light"] .audioSpeakerCap {
+  border-color: #56697e;
+  background: #65768a;
+  box-shadow: none;
 }

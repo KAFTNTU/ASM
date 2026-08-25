@@ -272,9 +272,10 @@ export class Board {
     this.scope.captureDigital("keypad", rxMode && isKeypadAddress(address));
   }
 
-  render(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  render(ctx: CanvasRenderingContext2D, w: number, h: number, theme: "dark" | "light" = "dark"): void {
+    const light = theme === "light";
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#101723";
+    ctx.fillStyle = light ? "#c3ced9" : "#0b1118";
     ctx.fillRect(0, 0, w, h);
 
     const boardX = 10;
@@ -282,18 +283,16 @@ export class Board {
     const boardW = w - 20;
     const boardH = h - 20;
 
-    const boardFill = ctx.createLinearGradient(boardX, boardY, boardX + boardW, boardY + boardH);
-    boardFill.addColorStop(0, "#245748");
-    boardFill.addColorStop(0.55, "#296353");
-    boardFill.addColorStop(1, "#193d34");
-    ctx.fillStyle = boardFill;
-    roundRect(ctx, boardX, boardY, boardW, boardH, 14, true, false);
+    ctx.fillStyle = light ? "#d9e1e9" : "#18212c";
+    ctx.strokeStyle = light ? "#8f9eae" : "#394758";
+    ctx.lineWidth = 2;
+    roundRect(ctx, boardX, boardY, boardW, boardH, 12, true, true);
     ctx.save();
     ctx.beginPath();
     roundRect(ctx, boardX, boardY, boardW, boardH, 14, false, false);
     ctx.clip();
     this.extraDevices.sevenSeg?.render(ctx, boardX + boardW - 282, boardY + 34);
-    this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 154);
+    this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 178);
     this.extraDevices.matrix?.render(ctx, boardX + 72, boardY + 256);
     this.extraDevices.lcd?.render(ctx, boardX + boardW - 306, boardY + 252);
     ctx.restore();

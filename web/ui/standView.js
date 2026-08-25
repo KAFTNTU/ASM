@@ -7,45 +7,214 @@ import { createMotorPanel } from "./motorPanel.js";
 import { LiveAudioMonitor } from "./liveAudioMonitor.js";
 import { createLogicEditor } from "./logicEditor.js";
 import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js";
+const UI_LANGUAGE_KEY = "st841.ui.language";
+const UI_TEXT = {
+    en: {
+        start: "Start",
+        stop: "Stop",
+        reset: "Reset",
+        step: "Step",
+        runner: "Runner",
+        oscilloscope: "Oscilloscope",
+        logicCircuits: "Logic circuits",
+        file: "File",
+        openFile: "Open file",
+        download: "Download",
+        autosave: "Autosave",
+        speed: "Speed",
+        fileName: "File name",
+        fullscreen: "Fullscreen",
+        exitFullscreen: "Exit fullscreen",
+        lightTheme: "Switch to light theme",
+        darkTheme: "Switch to dark theme",
+        close: "Close",
+        runnerTitle: "Runner / registers / memory",
+        output: "Output",
+        currentInstruction: "Current instruction",
+        resize: "Resize",
+        motor: "Motor 28BYJ-48",
+        stepperMotor: "Stepper motor",
+        errors: "Errors",
+        language: "Interface language",
+        autosaved: "autosaved",
+        restored: "restored",
+    },
+    uk: {
+        start: "Старт",
+        stop: "Стоп",
+        reset: "Скинути",
+        step: "Крок",
+        runner: "Виконання",
+        oscilloscope: "Осцилограф",
+        logicCircuits: "Логічні схеми",
+        file: "Файл",
+        openFile: "Відкрити файл",
+        download: "Завантажити",
+        autosave: "Автозбереження",
+        speed: "Швидкість",
+        fileName: "Назва файлу",
+        fullscreen: "Повноекранний режим",
+        exitFullscreen: "Вийти з повноекранного режиму",
+        lightTheme: "Увімкнути світлу тему",
+        darkTheme: "Увімкнути темну тему",
+        close: "Закрити",
+        runnerTitle: "Виконання / регістри / пам’ять",
+        output: "Вивід",
+        currentInstruction: "Поточна інструкція",
+        resize: "Змінити розмір",
+        motor: "Двигун 28BYJ-48",
+        stepperMotor: "Кроковий двигун",
+        errors: "Помилки",
+        language: "Мова інтерфейсу",
+        autosaved: "автозбережено",
+        restored: "відновлено",
+    },
+};
+const SUBTREE_TRANSLATIONS = [
+    ["Start", "Старт"],
+    ["Stop", "Стоп"],
+    ["Close", "Закрити"],
+    ["Oscilloscope", "Осцилограф"],
+    ["Hide oscilloscope", "Сховати осцилограф"],
+    ["Signal source", "Джерело сигналу"],
+    ["Resize motor panel", "Змінити розмір панелі двигуна"],
+    ["Peripheral write gate", "Строб запису периферії"],
+    ["Motor PWM output", "Вихід PWM двигуна"],
+    ["DAC0 audio output", "Аудіовихід DAC0"],
+    ["7-segment select", "Вибір 7-сегментного індикатора"],
+    ["LED bar select", "Вибір світлодіодної лінійки"],
+    ["LED matrix select", "Вибір LED-матриці"],
+    ["Joystick X voltage", "Напруга X джойстика"],
+    ["Keypad read select", "Вибір читання клавіатури"],
+    ["LCD select", "Вибір LCD"],
+    ["Live model", "Модель наживо"],
+    ["Front", "Спереду"],
+    ["Back", "Ззаду"],
+    ["Top", "Зверху"],
+    ["Bottom", "Знизу"],
+    ["Audio subsystem", "Звукова підсистема"],
+    ["Microphone level", "Рівень мікрофона"],
+    ["Parameters", "Параметри"],
+    ["Motor parameters", "Параметри двигуна"],
+    ["Audio parameters", "Параметри звуку"],
+    ["Signal parameters", "Параметри сигналу"],
+    ["Reverse", "Інвертувати"],
+    ["Save", "Зберегти"],
+    ["Ext. trigger", "Зовнішній запуск"],
+    ["Time", "Час"],
+    ["Channel A", "Канал A"],
+    ["Channel_A", "Канал_A"],
+    ["Timebase", "Розгортка"],
+    ["Scale:", "Масштаб:"],
+    ["X pos.(Div):", "Позиція X (под.):"],
+    ["Y pos.(Div):", "Позиція Y (под.):"],
+    ["Add", "Додати"],
+    ["Trigger", "Запуск"],
+    ["Edge:", "Фронт:"],
+    ["Level:", "Рівень:"],
+    ["Ext", "Зовн."],
+    ["Single", "Одиночний"],
+    ["Normal", "Звичайний"],
+    ["Auto", "Авто"],
+    ["None", "Немає"],
+    ["Logic circuit editor", "Редактор логічних схем"],
+    ["File", "Файл"],
+    ["Edit", "Редагування"],
+    ["View", "Вигляд"],
+    ["Fullscreen", "Повноекранний режим"],
+    ["Exit fullscreen", "Вийти з повноекранного режиму"],
+    ["Wire color", "Колір дроту"],
+    ["Components", "Компоненти"],
+    ["Properties", "Властивості"],
+    ["Close editor", "Закрити редактор"],
+    ["Run or pause simulation", "Запустити або призупинити симуляцію"],
+    ["Build truth table", "Побудувати таблицю істинності"],
+    ["Verify test vectors", "Перевірити тестові вектори"],
+    ["Create nested circuit", "Створити вкладену мікросхему"],
+    ["Fit entire circuit", "Умістити всю схему"],
+    ["Build a circuit", "Складіть схему"],
+    ["Select a component on the toolbar and click the canvas. Connect pins with the Wire tool.", "Виберіть елемент на панелі та клацніть по полю. З'єднуйте контакти інструментом «Дріт»."],
+    ["New circuit", "Нова схема"],
+    ["Open JSON…", "Відкрити JSON…"],
+    ["Save JSON", "Зберегти JSON"],
+    ["Save in browser", "Зберегти у браузері"],
+    ["Undo", "Скасувати"],
+    ["Redo", "Повторити"],
+    ["Copy", "Копіювати"],
+    ["Cut", "Вирізати"],
+    ["Paste", "Вставити"],
+    ["Select all", "Виділити все"],
+    ["Delete selected", "Видалити вибране"],
+    ["Duplicate", "Дублювати"],
+    ["Fit circuit", "Умістити схему"],
+    ["Zoom 100%", "Масштаб 100%"],
+    ["Show truth table", "Показати таблицю істинності"],
+    ["Logic switch", "Логічний перемикач"],
+    ["Button", "Кнопка"],
+    ["Clock generator", "Генератор імпульсів"],
+    ["Constant 0", "Константа 0"],
+    ["Constant 1", "Константа 1"],
+    ["4-bit DIP switch", "DIP-перемикач 4 біти"],
+    ["Buffer", "Буфер"],
+    ["Tri-state buffer", "Тристабільний буфер"],
+    ["Multiplexer 4:1", "Мультиплексор 4:1"],
+    ["Decoder 2→4", "Дешифратор 2→4"],
+    ["Full adder", "Повний суматор"],
+    ["D flip-flop", "D-тригер"],
+    ["4-bit counter", "Лічильник 4 біти"],
+    ["Logic probe", "Логічний пробник"],
+    ["Seven-segment display", "Семисегментник"],
+    ["HEX display", "HEX-індикатор"],
+    ["ADuC841 output", "Вихід ADuC841"],
+    ["ADuC841 input", "Вхід ADuC841"],
+    ["Custom circuits", "Власні мікросхеми"],
+    ["+ Create circuit", "+ Створити мікросхему"],
+    ["Nested editable circuit", "Вкладена редагована схема"],
+];
 export function renderStand(params) {
     const { board } = params;
     const cpu = new EmuBoardController(board);
     const liveAudio = new LiveAudioMonitor();
     const root = el("div", { class: "minimalShell" });
     let uiTheme = localStorage.getItem("st841.ui.theme") === "light" ? "light" : "dark";
+    let uiLanguage = localStorage.getItem(UI_LANGUAGE_KEY) === "uk" ? "uk" : "en";
+    const t = (key) => UI_TEXT[uiLanguage][key];
+    const tr = (english, ukrainian) => uiLanguage === "uk" ? ukrainian : english;
     root.dataset.theme = uiTheme;
+    root.dataset.language = uiLanguage;
     document.documentElement.style.colorScheme = uiTheme;
+    document.documentElement.lang = uiLanguage === "uk" ? "uk" : "en";
     const windowCard = el("div", { class: "windowCard" });
     root.appendChild(windowCard);
     const toolbar = el("div", { class: "toolbar" });
-    const runBtn = button("Start", "green");
-    const resetBtn = button("Reset");
-    const stepBtn = button("Step");
+    const runBtn = button(t("start"), "green");
+    const resetBtn = button(t("reset"));
+    const stepBtn = button(t("step"));
     runBtn.classList.add("runControl");
     resetBtn.classList.add("resetControl");
     stepBtn.classList.add("stepControl");
-    const traceBtn = button("Runner");
-    const oscilloscopeBtn = button("\u041e\u0441\u0446\u0438\u043b\u043e\u0433\u0440\u0430\u0444");
-    const logicEditorBtn = button("Логічні схеми");
+    const traceBtn = button(t("runner"));
+    const oscilloscopeBtn = button(t("oscilloscope"));
+    const logicEditorBtn = button(t("logicCircuits"));
     const modeSelect = el("select", { class: "samplePicker" });
     modeSelect.append(option("asm", "ASM"), option("c", "C"));
-    const fileNameInput = el("input", { class: "fileNameInput mono", value: "main", title: "File name" });
+    const fileNameInput = el("input", { class: "fileNameInput mono", value: "main", title: t("fileName") });
     const fileMenuWrap = el("div", { class: "fileMenuWrap" });
-    const fileMenuBtn = button("Файл");
+    const fileMenuBtn = button(t("file"));
     fileMenuBtn.classList.add("fileMenuBtn");
     const fileMenu = el("div", { class: "fileMenu hidden" });
     const openFileBtn = el("button", { class: "fileMenuItem", type: "button" });
-    openFileBtn.textContent = "Відкрити файл";
+    openFileBtn.textContent = t("openFile");
     const downloadFileBtn = el("button", { class: "fileMenuItem", type: "button" });
-    downloadFileBtn.textContent = "Завантажити";
+    downloadFileBtn.textContent = t("download");
     const autosaveBtn = el("button", { class: "fileMenuItem autosaveMenuItem", type: "button" });
-    autosaveBtn.textContent = "Автозбереження";
+    autosaveBtn.textContent = t("autosave");
     const fileInput = el("input", { type: "file", accept: ".c,.h,.asm,.a51,.txt", class: "hiddenFileInput" });
     fileMenu.append(openFileBtn, downloadFileBtn, autosaveBtn);
     fileMenuWrap.append(fileMenuBtn, fileMenu, fileInput);
     const speedGroup = el("div", { class: "speedGroup" });
     const speedLabel = el("span", { class: "speedLabel" });
-    speedLabel.textContent = "Швидкість";
+    speedLabel.textContent = t("speed");
     speedGroup.appendChild(speedLabel);
     const speedMultipliers = [1, 10, 100, 1000, 10000];
     const speedButtons = speedMultipliers.map((speed) => {
@@ -55,23 +224,26 @@ export function renderStand(params) {
         return { speed, node };
     });
     const fullscreenBtn = button("⛶", "fullscreenBtn");
-    fullscreenBtn.title = "Повноекранний режим";
+    fullscreenBtn.title = t("fullscreen");
     const themeBtn = button("☀", "themeBtn");
+    const languageBtn = button(uiLanguage === "uk" ? "UK" : "EN", "languageBtn");
+    languageBtn.title = t("language");
+    languageBtn.setAttribute("aria-label", t("language"));
     const runGroup = el("div", { class: "toolbarGroup runGroup" });
     runGroup.append(runBtn, resetBtn, stepBtn);
     const projectGroup = el("div", { class: "toolbarGroup projectGroup" });
     projectGroup.append(fileNameInput, modeSelect, fileMenuWrap);
     const toolsGroup = el("div", { class: "toolbarGroup toolsGroup" });
     toolsGroup.append(traceBtn, oscilloscopeBtn, logicEditorBtn);
-    toolbar.append(runGroup, projectGroup, toolsGroup, speedGroup, themeBtn, fullscreenBtn);
+    toolbar.append(runGroup, projectGroup, toolsGroup, speedGroup, themeBtn, languageBtn, fullscreenBtn);
     syncThemeButton();
     windowCard.appendChild(toolbar);
     const debugModal = el("div", { class: "debugModal hidden" });
     const debugCard = el("div", { class: "debugCard" });
     const debugHead = el("div", { class: "debugHead" });
     const debugTitle = el("div", { class: "debugTitle" });
-    debugTitle.textContent = "Runner / registers / memory";
-    const debugClose = button("Close");
+    debugTitle.textContent = t("runnerTitle");
+    const debugClose = button(t("close"));
     debugClose.classList.add("debugClose");
     debugHead.append(debugTitle, debugClose);
     const debugBody = el("div", { class: "debugBody" });
@@ -90,6 +262,12 @@ export function renderStand(params) {
     windowCard.appendChild(motorPanel.element);
     const logicEditor = createLogicEditor({ board });
     windowCard.appendChild(logicEditor.element);
+    const relocalizePanels = () => window.queueMicrotask(() => {
+        localizeStaticSubtree(motorPanel.element, uiLanguage);
+        localizeStaticSubtree(logicEditor.element, uiLanguage);
+    });
+    motorPanel.element.addEventListener("click", relocalizePanels);
+    logicEditor.element.addEventListener("click", relocalizePanels);
     const mainRow = el("div", { class: "mainRow" });
     const boardPane = el("section", { class: "boardPane" });
     const editorPane = el("section", { class: "editorPane" });
@@ -108,7 +286,7 @@ export function renderStand(params) {
     });
     const scopeHitAreas = [
         { source: "sevenSeg", x: 428, y: 44, w: 232, h: 104 },
-        { source: "ledBar", x: 38, y: 164, w: 232, h: 56 },
+        { source: "ledBar", x: 38, y: 188, w: 232, h: 56 },
         { source: "matrix", x: 82, y: 266, w: 132, h: 186 },
         { source: "lcd", x: 404, y: 262, w: 268, h: 184 },
     ];
@@ -160,11 +338,11 @@ export function renderStand(params) {
     joystickWrap.querySelector(".boardCaption")?.addEventListener("click", () => motorPanel.open("joystick"));
     const motorWrap = el("button", { class: "boardBox motorBox" });
     motorWrap.type = "button";
-    motorWrap.appendChild(caption("\u0414\u0432\u0438\u0433\u0443\u043d 28BYJ-48"));
+    motorWrap.appendChild(caption(t("motor")));
     const motorStatus = el("div", { class: "motorPreview mono" });
     motorStatus.textContent = "0% \u2022 0 \u043e\u0431/\u0445\u0432";
     const motorHint = el("div", { class: "motorHint" });
-    motorHint.textContent = "\u041a\u0440\u043e\u043a\u043e\u0432\u0438\u0439 \u0434\u0432\u0438\u0433\u0443\u043d";
+    motorHint.textContent = t("stepperMotor");
     motorWrap.append(motorStatus, motorHint);
     boardOverlays.appendChild(motorWrap);
     const audioWrap = el("button", { class: "boardBox audioBox" });
@@ -191,10 +369,20 @@ export function renderStand(params) {
     editorBox.appendChild(editorTop);
     const editorShell = el("div", { class: "editorShell" });
     const lineNumbers = el("pre", { class: "lineNumbers mono" });
-    const execMarker = el("div", { class: "execMarker", title: "Current instruction" });
+    const execMarker = el("div", { class: "execMarker", title: t("currentInstruction") });
     const editorStack = el("div", { class: "editorStack" });
     const codeHighlight = el("pre", { class: "codeHighlight mono" });
-    const editor = el("textarea", { class: "editorText spellcheck-false" });
+    const editor = el("textarea", {
+        class: "editorText spellcheck-false",
+        autocomplete: "off",
+        autocorrect: "off",
+        autocapitalize: "off",
+        spellcheck: "false",
+        writingsuggestions: "false",
+        "data-gramm": "false",
+        "data-gramm_editor": "false",
+        "data-enable-grammarly": "false",
+    });
     const autocompleteMenu = el("div", { class: "autocompleteMenu hidden" });
     const autocompleteGhost = el("pre", { class: "autocompleteGhost mono hidden" });
     const scrollSlider = el("div", { class: "editorScrollSlider" });
@@ -207,13 +395,13 @@ export function renderStand(params) {
     const statusStrip = el("div", { class: "statusStrip mono" });
     editorBox.appendChild(statusStrip);
     editorPane.appendChild(editorBox);
-    const splitHandle = el("div", { class: "splitHandle", title: "Resize" });
+    const splitHandle = el("div", { class: "splitHandle", title: t("resize") });
     splitHandle.appendChild(el("div", { class: "splitDot" }));
     windowCard.appendChild(splitHandle);
     const messagesPane = el("section", { class: "messagesPane" });
     const messagesHead = el("div", { class: "messagesHead" });
     const messagesTitle = el("div", { class: "messagesTitle" });
-    messagesTitle.textContent = "Output";
+    messagesTitle.textContent = t("output");
     const messagesMeta = el("div", { class: "messagesMeta mono" });
     messagesHead.append(messagesTitle, messagesMeta);
     messagesPane.appendChild(messagesHead);
@@ -270,16 +458,16 @@ export function renderStand(params) {
         const isSaved = lastSavedSignature === currentEditorSignature();
         autosaveBtn.classList.remove("saved", "dirty", "disabled");
         if (!autosaveEnabled) {
-            autosaveBtn.innerHTML = '<span>Autosave</span><span class="autosaveIcon off">X</span>';
+            autosaveBtn.innerHTML = `<span>${escapeHtml(t("autosave"))}</span><span class="autosaveIcon off">X</span>`;
             autosaveBtn.classList.add("disabled");
             return;
         }
         if (isSaved) {
-            autosaveBtn.innerHTML = '<span>Autosave</span><span class="autosaveIcon on">OK</span>';
+            autosaveBtn.innerHTML = `<span>${escapeHtml(t("autosave"))}</span><span class="autosaveIcon on">OK</span>`;
             autosaveBtn.classList.add("saved");
         }
         else {
-            autosaveBtn.innerHTML = '<span>Autosave</span><span class="autosaveIcon off">!</span>';
+            autosaveBtn.innerHTML = `<span>${escapeHtml(t("autosave"))}</span><span class="autosaveIcon off">!</span>`;
             autosaveBtn.classList.add("dirty");
         }
     }
@@ -289,7 +477,7 @@ export function renderStand(params) {
         lastSavedSignature = currentEditorSignature();
         updateAutosaveButton();
         if (showMessage)
-            messagesMeta.textContent = `autosaved ${currentFileName()}`;
+            messagesMeta.textContent = `${t("autosaved")} ${currentFileName()}`;
     }
     function scheduleAutosave() {
         if (autosaveTimer != null) {
@@ -318,7 +506,7 @@ export function renderStand(params) {
             editor.value = String(payload.text || "").replace(/\r\n?/g, "\n");
             lastSavedSignature = currentEditorSignature();
             updateAutosaveButton();
-            messagesMeta.textContent = `restored ${currentFileName()}`;
+            messagesMeta.textContent = `${t("restored")} ${currentFileName()}`;
             return true;
         }
         catch {
@@ -659,6 +847,9 @@ export function renderStand(params) {
     themeBtn.addEventListener("click", () => {
         setUiTheme(uiTheme === "dark" ? "light" : "dark");
     });
+    languageBtn.addEventListener("click", () => {
+        setUiLanguage(uiLanguage === "uk" ? "en" : "uk");
+    });
     document.addEventListener("fullscreenchange", syncFullscreenButton);
     motorWrap.addEventListener("click", () => {
         motorPanel.open("motor");
@@ -789,7 +980,7 @@ export function renderStand(params) {
             messagesBody.scrollTop = 0;
         }
         if (summary === "errors" || errors > 0) {
-            statusStrip.innerHTML = `<span class="statusErrorLabel">Errors: ${errors}</span>`;
+            statusStrip.innerHTML = `<span class="statusErrorLabel">${escapeHtml(t("errors"))}: ${errors}</span>`;
         }
         else {
             statusStrip.textContent = summary;
@@ -825,11 +1016,11 @@ export function renderStand(params) {
     function syncDeviceBadges() {
         const motor = board.extraDevices.motor?.getTelemetry?.();
         if (motor) {
-            motorStatus.textContent = `${Math.round(motor.duty * 100)}% \u2022 ${Math.round(motor.currentRpm)} \u043e\u0431/\u0445\u0432`;
+            motorStatus.textContent = `${Math.round(motor.duty * 100)}% \u2022 ${Math.round(motor.currentRpm)} ${tr("rpm", "об/хв")}`;
             motorWrap.classList.toggle("active", motor.currentRpm > 0.2 || motor.active);
         }
         else {
-            motorStatus.textContent = "0% \u2022 0 \u043e\u0431/\u0445\u0432";
+            motorStatus.textContent = `0% \u2022 0 ${tr("rpm", "об/хв")}`;
             motorWrap.classList.remove("active");
         }
         const audio = board.extraDevices.audio?.getTelemetry?.();
@@ -863,9 +1054,9 @@ export function renderStand(params) {
             .sort((a, b) => b.pc - a.pc)[0];
         const lineNo = exactLine?.line ?? previousLine?.line ?? null;
         const sourceLine = lineNo != null ? editor.value.split(/\r?\n/)[lineNo - 1] ?? "" : "";
-        const exactBadge = exactLine ? "\u0442\u043e\u0447\u043d\u043e" : previousLine ? "\u043d\u0430\u0439\u0431\u043b\u0438\u0436\u0447\u0430" : "\u043d\u0435\u043c\u0430";
+        const exactBadge = exactLine ? tr("exact", "точно") : previousLine ? tr("nearest", "найближча") : tr("none", "немає");
         const statusText = cpu.isRunning() ? "RUN" : "STOP";
-        const p36 = ((cpu.getSfr(SFR.p3) >> 6) & 1) === 1 ? "TX / \u0437\u0430\u043f\u0438\u0441" : "RX / \u0447\u0438\u0442\u0430\u043d\u043d\u044f";
+        const p36 = ((cpu.getSfr(SFR.p3) >> 6) & 1) === 1 ? tr("TX / write", "TX / запис") : tr("RX / read", "RX / читання");
         const psw = cpu.getSfr(SFR.psw);
         const bank = (psw >> 3) & 0x03;
         const regBase = bank * 8;
@@ -886,11 +1077,11 @@ export function renderStand(params) {
             ["DPTR", `${hexByte(cpu.getSfr(SFR.dph))}${hexByte(cpu.getSfr(SFR.dpl)).slice(2)}`],
         ];
         const ports = [
-            ["P0 / \u0448\u0438\u043d\u0430 \u0434\u0430\u043d\u0438\u0445", hexByte(cpu.getSfr(SFR.p0))],
+            [tr("P0 / data bus", "P0 / шина даних"), hexByte(cpu.getSfr(SFR.p0))],
             ["P1", hexByte(cpu.getSfr(SFR.p1))],
-            ["P2 / \u0430\u0434\u0440\u0435\u0441\u0430", hexByte(cpu.getSfr(SFR.p2))],
+            [tr("P2 / address", "P2 / адреса"), hexByte(cpu.getSfr(SFR.p2))],
             ["P3", hexByte(cpu.getSfr(SFR.p3))],
-            ["P3.6 \u0440\u0435\u0436\u0438\u043c", p36],
+            [tr("P3.6 mode", "P3.6 режим"), p36],
         ];
         const sfrs = [
             ["IE", hexByte(cpu.getSfr(SFR.ie))],
@@ -947,7 +1138,7 @@ export function renderStand(params) {
       <div class="runnerPanel">
         <section class="runnerHero">
           <div>
-            <div class="runnerLabel">\u0417\u0430\u0440\u0430\u0437 \u0432\u0438\u043a\u043e\u043d\u0443\u0454\u0442\u044c\u0441\u044f</div>
+            <div class="runnerLabel">${tr("Currently executing", "Зараз виконується")}</div>
             <div class="runnerInstruction mono">${escapeHtml(decodeInstruction(cpu))}</div>
             <pre class="runnerSourceLine mono">${lineNo != null ? `L${lineNo}  ` : "L-  "}${escapeHtml(sourceLine || "-")}</pre>
           </div>
@@ -956,14 +1147,14 @@ export function renderStand(params) {
             <span>PC ${hexWord(pc)}</span>
             <span>OP ${hexByte(op)}</span>
             <span>bytes ${codeBytes}</span>
-            <span>line: ${exactBadge}</span>
+            <span>${tr("line", "рядок")}: ${exactBadge}</span>
           </div>
         </section>
 
         <div class="runnerGrid">
-          ${card("\u0412\u0432\u0456\u0434 / \u0448\u0438\u043d\u0438", `
+          ${card(tr("Input / buses", "Ввід / шини"), `
             ${kv("P3.6", p36, p36.startsWith("RX") ? "warn" : "ok")}
-            ${kv("\u041d\u0430\u0442\u0438\u0441\u043d\u0443\u0442\u043e", pressedKeys || "-")}
+            ${kv(tr("Pressed", "Натиснуто"), pressedKeys || "-")}
             ${kv("Keypad col1", hexByte(keypadBus.col1))}
             ${kv("Keypad col2", hexByte(keypadBus.col2))}
             ${kv("Keypad col3", hexByte(keypadBus.col3))}
@@ -971,39 +1162,39 @@ export function renderStand(params) {
             ${kv("Joystick Y", joy.y)}
           `)}
 
-          ${card("\u0420\u0435\u0433\u0456\u0441\u0442\u0440\u0438 CPU", kvList(coreRegs) + `<div class="runnerSub mono">Bank ${bank} - SP delta +${spDelta}</div>`)}
+          ${card(tr("CPU registers", "Регістри CPU"), kvList(coreRegs) + `<div class="runnerSub mono">${tr("Bank", "Банк")} ${bank} - ${tr("SP delta", "зміщення SP")} +${spDelta}</div>`)}
 
-          ${card("\u041f\u043e\u0440\u0442\u0438 / SFR", kvList(ports) + `<hr class="runnerHr"/>` + kvList(sfrs))}
+          ${card(tr("Ports / SFR", "Порти / SFR"), kvList(ports) + `<hr class="runnerHr"/>` + kvList(sfrs))}
 
-          ${card("R0-R7 \u0430\u043a\u0442\u0438\u0432\u043d\u043e\u0433\u043e \u0431\u0430\u043d\u043a\u0443", kvList(regsR))}
+          ${card(tr("R0-R7 of active bank", "R0-R7 активного банку"), kvList(regsR))}
 
-          ${card("Motor", kvList([
-            ["active", motor ? String(motor.active) : "-"],
-            ["duty", motor ? `${Math.round(motor.duty * 100)}%` : "-"],
-            ["freq", motor ? `${motor.frequencyHz.toFixed(1)} Hz` : "-"],
-            ["current rpm", motor ? motor.currentRpm.toFixed(1) : "-"],
-            ["target rpm", motor ? motor.targetRpm.toFixed(1) : "-"],
-            ["source", motor ? motor.sourceLabel : "-"],
+          ${card(tr("Motor", "Двигун"), kvList([
+            [tr("active", "активний"), motor ? String(motor.active) : "-"],
+            [tr("duty", "заповнення"), motor ? `${Math.round(motor.duty * 100)}%` : "-"],
+            [tr("frequency", "частота"), motor ? `${motor.frequencyHz.toFixed(1)} Hz` : "-"],
+            [tr("current rpm", "поточні об/хв"), motor ? motor.currentRpm.toFixed(1) : "-"],
+            [tr("target rpm", "цільові об/хв"), motor ? motor.targetRpm.toFixed(1) : "-"],
+            [tr("source", "джерело"), motor ? motor.sourceLabel : "-"],
         ]))}
 
-          ${card("LCD cells", `<pre class="runnerPre mono">${escapeHtml(lcdRows.join("\n") || "-")}</pre>`, "runnerLcdCard")}
+          ${card(tr("LCD cells", "Комірки LCD"), `<pre class="runnerPre mono">${escapeHtml(lcdRows.join("\n") || "-")}</pre>`, "runnerLcdCard")}
 
-          ${card("\u0421\u0442\u0435\u043a", smallTable(stackRows, ["Addr", "Value", "Mark"]))}
+          ${card(tr("Stack", "Стек"), smallTable(stackRows, [tr("Address", "Адреса"), tr("Value", "Значення"), tr("Mark", "Позначка")]))}
 
-          ${card("IRAM 0x00..0x1F", smallTable(iramRows, ["Addr", "Bytes"]) + `${kv("XRAM 00..07", xramPreview)}`)}
+          ${card("IRAM 0x00..0x1F", smallTable(iramRows, [tr("Address", "Адреса"), tr("Bytes", "Байти")]) + `${kv("XRAM 00..07", xramPreview)}`)}
 
-          ${card("\u041f\u043e\u0442\u0456\u043a \u0432\u0438\u043a\u043e\u043d\u0430\u043d\u043d\u044f", `
-            ${kv("current PC", hexWord(pc))}
-            ${kv("ASM line", lineNo != null ? `L${lineNo}` : "-")}
-            ${kv("last known", flow.lastKnown)}
-            ${kv("last CALL/RET", flow.lastCallRet)}
-            ${kv("same-PC streak", flow.streak)}
-            ${kv("recent PCs", flow.recent)}
+          ${card(tr("Execution flow", "Потік виконання"), `
+            ${kv(tr("current PC", "поточний PC"), hexWord(pc))}
+            ${kv(tr("ASM line", "рядок ASM"), lineNo != null ? `L${lineNo}` : "-")}
+            ${kv(tr("last known", "останній відомий"), flow.lastKnown)}
+            ${kv(tr("last CALL/RET", "останній CALL/RET"), flow.lastCallRet)}
+            ${kv(tr("same-PC streak", "повторів PC"), flow.streak)}
+            ${kv(tr("recent PCs", "останні PC"), flow.recent)}
           `, "wide")}
         </div>
 
         <section class="runnerCard runnerTraceCard">
-          <h3>Trace - \u043e\u0441\u0442\u0430\u043d\u043d\u0456 \u0456\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0456\u0457</h3>
+          <h3>${tr("Trace - latest instructions", "Трасування — останні інструкції")}</h3>
           <table class="runnerTrace mono">
             <thead><tr><th>tick</th><th>PC</th><th>OP</th><th>ASM</th><th>ACC</th><th>P0</th><th>P2</th></tr></thead>
             <tbody>${traceRows || `<tr><td colspan="7">-</td></tr>`}</tbody>
@@ -1013,7 +1204,7 @@ export function renderStand(params) {
     `;
     }
     function syncRunButton() {
-        runBtn.textContent = isRunning ? "Stop" : "Start";
+        runBtn.textContent = isRunning ? t("stop") : t("start");
         runBtn.className = `topBtn runControl ${isRunning ? "red" : "green"}`;
     }
     async function toggleSimulatorFullscreen() {
@@ -1033,7 +1224,8 @@ export function renderStand(params) {
     function syncFullscreenButton() {
         const active = document.fullscreenElement === windowCard;
         fullscreenBtn.textContent = active ? "🗗" : "⛶";
-        fullscreenBtn.title = active ? "Вийти з повноекранного режиму" : "Повноекранний режим";
+        fullscreenBtn.title = active ? t("exitFullscreen") : t("fullscreen");
+        fullscreenBtn.setAttribute("aria-label", fullscreenBtn.title);
         fullscreenBtn.classList.toggle("active", active);
     }
     function setUiTheme(theme) {
@@ -1041,14 +1233,56 @@ export function renderStand(params) {
         root.dataset.theme = uiTheme;
         document.documentElement.style.colorScheme = uiTheme;
         localStorage.setItem("st841.ui.theme", uiTheme);
+        lastBoardVisualRevision = -1;
         syncThemeButton();
     }
     function syncThemeButton() {
         const light = uiTheme === "light";
         themeBtn.textContent = light ? "☾" : "☀";
-        themeBtn.title = light ? "Увімкнути темну тему" : "Увімкнути світлу тему";
+        themeBtn.title = light ? t("darkTheme") : t("lightTheme");
         themeBtn.setAttribute("aria-label", themeBtn.title);
         themeBtn.classList.toggle("active", light);
+    }
+    function setUiLanguage(language) {
+        uiLanguage = language;
+        localStorage.setItem(UI_LANGUAGE_KEY, uiLanguage);
+        applyUiLanguage();
+    }
+    function applyUiLanguage() {
+        root.dataset.language = uiLanguage;
+        document.documentElement.lang = uiLanguage === "uk" ? "uk" : "en";
+        languageBtn.textContent = uiLanguage === "uk" ? "UK" : "EN";
+        languageBtn.title = t("language");
+        languageBtn.setAttribute("aria-label", t("language"));
+        resetBtn.textContent = t("reset");
+        stepBtn.textContent = t("step");
+        traceBtn.textContent = t("runner");
+        oscilloscopeBtn.textContent = t("oscilloscope");
+        logicEditorBtn.textContent = t("logicCircuits");
+        fileNameInput.title = t("fileName");
+        fileMenuBtn.textContent = t("file");
+        openFileBtn.textContent = t("openFile");
+        downloadFileBtn.textContent = t("download");
+        speedLabel.textContent = t("speed");
+        debugTitle.textContent = t("runnerTitle");
+        debugClose.textContent = t("close");
+        messagesTitle.textContent = t("output");
+        execMarker.title = t("currentInstruction");
+        splitHandle.title = t("resize");
+        const motorCaption = motorWrap.querySelector(".boardCaption");
+        if (motorCaption)
+            motorCaption.textContent = t("motor");
+        motorHint.textContent = t("stepperMotor");
+        localizeStaticSubtree(motorPanel.element, uiLanguage);
+        localizeStaticSubtree(logicEditor.element, uiLanguage);
+        syncRunButton();
+        syncThemeButton();
+        syncFullscreenButton();
+        syncDeviceBadges();
+        updateAutosaveButton();
+        if (debugOpen)
+            renderDebugPanel();
+        window.dispatchEvent(new CustomEvent("st841:languagechange", { detail: { language: uiLanguage } }));
     }
     function setSpeed(speed) {
         currentSpeed = speed;
@@ -1153,7 +1387,7 @@ export function renderStand(params) {
             liveAudio.update(board.extraDevices.audio?.getTelemetry?.() ?? null);
             const boardVisualRevision = board.getVisualRevision();
             if (boardVisualRevision !== lastBoardVisualRevision) {
-                board.render(drawContext, canvas.width, canvas.height);
+                board.render(drawContext, canvas.width, canvas.height, uiTheme);
                 lastBoardVisualRevision = boardVisualRevision;
             }
             motorPanel.renderFrame(visualDtSeconds);
@@ -1164,6 +1398,7 @@ export function renderStand(params) {
         }
         window.requestAnimationFrame(draw);
     }
+    applyUiLanguage();
     restoreAutosave();
     updateLineNumbers();
     updateSyntaxHighlight();
@@ -1173,6 +1408,44 @@ export function renderStand(params) {
     syncJoystick();
     window.requestAnimationFrame(draw);
     return root;
+}
+function localizeStaticSubtree(root, language) {
+    const translated = (value) => {
+        const leading = value.match(/^\s*/)?.[0] ?? "";
+        const trailing = value.match(/\s*$/)?.[0] ?? "";
+        const content = value.trim();
+        if (!content)
+            return value;
+        const pinMatch = content.match(/^(P[0-3]\.[0-7])\s+(?:pin|контакт)$/i);
+        if (pinMatch)
+            return `${leading}${pinMatch[1]} ${language === "uk" ? "контакт" : "pin"}${trailing}`;
+        const pair = SUBTREE_TRANSLATIONS.find(([en, uk]) => content === en || content === uk);
+        if (!pair)
+            return value;
+        return `${leading}${language === "uk" ? pair[1] : pair[0]}${trailing}`;
+    };
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode())
+        nodes.push(walker.currentNode);
+    for (const node of nodes) {
+        const parent = node.parentElement;
+        if (!parent || parent.matches("textarea, pre, code, script, style"))
+            continue;
+        const next = translated(node.nodeValue ?? "");
+        if (next !== node.nodeValue)
+            node.nodeValue = next;
+    }
+    for (const node of Array.from(root.querySelectorAll("[title], [aria-label]"))) {
+        for (const attribute of ["title", "aria-label"]) {
+            const current = node.getAttribute(attribute);
+            if (!current)
+                continue;
+            const next = translated(current);
+            if (next !== current)
+                node.setAttribute(attribute, next);
+        }
+    }
 }
 function option(value, label) {
     const node = document.createElement("option");

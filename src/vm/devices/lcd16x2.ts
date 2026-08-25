@@ -355,31 +355,30 @@ export class Lcd16x2 implements BusDevice {
 
   render(ctx: CanvasRenderingContext2D, x: number, y: number): void {
     ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.64)";
-    ctx.strokeStyle = "rgba(255,255,255,0.2)";
-    ctx.fillRect(x, y, 268, 184);
-    ctx.strokeRect(x + 0.5, y + 0.5, 267, 183);
-
+    const screenX = x;
+    const screenY = y;
+    const screenW = 268;
+    const screenH = 184;
     ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.fillRect(x + 14, y + 24, 238, 130);
+    ctx.fillRect(screenX, screenY, screenW, screenH);
     ctx.strokeStyle = "rgba(122,162,255,0.25)";
-    ctx.strokeRect(x + 14.5, y + 24.5, 237, 129);
+    ctx.strokeRect(screenX + 0.5, screenY + 0.5, screenW - 1, screenH - 1);
 
-    const cellW = 238 / LCD_COLS;
-    const cellH = 130 / LCD_ROWS;
+    const cellW = screenW / LCD_COLS;
+    const cellH = screenH / LCD_ROWS;
     ctx.strokeStyle = "rgba(110,180,255,0.15)";
     for (let row = 0; row <= LCD_ROWS; row++) {
-      const gy = y + 24 + row * cellH;
+      const gy = screenY + row * cellH;
       ctx.beginPath();
-      ctx.moveTo(x + 14, gy + 0.5);
-      ctx.lineTo(x + 252, gy + 0.5);
+      ctx.moveTo(screenX, gy + 0.5);
+      ctx.lineTo(screenX + screenW, gy + 0.5);
       ctx.stroke();
     }
     for (let col = 0; col <= LCD_COLS; col++) {
-      const gx = x + 14 + col * cellW;
+      const gx = screenX + col * cellW;
       ctx.beginPath();
-      ctx.moveTo(gx + 0.5, y + 24);
-      ctx.lineTo(gx + 0.5, y + 154);
+      ctx.moveTo(gx + 0.5, screenY);
+      ctx.lineTo(gx + 0.5, screenY + screenH);
       ctx.stroke();
     }
 
@@ -392,8 +391,8 @@ export class Lcd16x2 implements BusDevice {
 
       for (let row = 0; row < LCD_ROWS; row++) {
         for (let col = 0; col < LCD_COLS; col++) {
-          const cellX = x + 14 + col * cellW;
-          const cellY = y + 24 + row * cellH;
+          const cellX = screenX + col * cellW;
+          const cellY = screenY + row * cellH;
 
           ctx.fillStyle = "rgba(20,35,34,0.28)";
           ctx.fillRect(cellX + 1.2, cellY + 1.2, cellW - 2.4, cellH - 2.4);
@@ -421,13 +420,13 @@ export class Lcd16x2 implements BusDevice {
     ctx.shadowBlur = 3;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.font = "15px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    ctx.font = "19px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
     for (let row = 0; row < this.lines.length; row++) {
       const line = this.lines[row];
       for (let col = 0; col < LCD_COLS; col++) {
         const ch = line[col] ?? " ";
-        const cx = x + 14 + col * cellW + cellW / 2;
-        const cy = y + 24 + row * cellH + cellH / 2 + 0.5;
+        const cx = screenX + col * cellW + cellW / 2;
+        const cy = screenY + row * cellH + cellH / 2 + 0.5;
         ctx.fillText(ch, cx, cy);
       }
     }
