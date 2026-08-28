@@ -28,8 +28,10 @@ export function checkC(source) {
     for (const open of stack.reverse()) {
         diagnostics.push({ level: "error", line: open.line, message: `Missing '${pairs[open.char]}' for '${open.char}'.` });
     }
-    if (!/\bmain\s*\(/i.test(masked)) {
+    const hasMain = /\bmain\s*\(/i.test(masked);
+    if (!hasMain) {
         diagnostics.push({ level: "warning", message: "C51: add a main() entry function." });
+        addStandaloneSyntaxDiagnostics(masked, diagnostics);
     }
     if (/\b(?:reti|ret)\s*;/i.test(masked)) {
         diagnostics.push({
@@ -44,6 +46,42 @@ export function checkC(source) {
         ok: diagnostics.every((item) => item.level !== "error"),
         diagnostics,
     };
+}
+/**
+ * Catch the most common beginner mistake before transpilation: typing a bare
+ * identifier or number as if it were an instruction.  ASM reports this at the
+ * exact source line; C should do the same instead of only showing the generic
+ * "main() was not found" message (which has no line to underline).
+ */
+function addStandaloneSyntaxDiagnostics(masked, diagnostics) {
+    const lines = masked.split("\n");
+    let continuedPreprocessorLine = false;
+    lines.forEach((raw, index) => {
+        const line = raw.trim();
+        if (!line) {
+            continuedPreprocessorLine = false;
+            return;
+        }
+        if (continuedPreprocessorLine || line.startsWith("#")) {
+            continuedPreprocessorLine = line.endsWith("\\");
+            return;
+        }
+        if (/^[A-Za-z_]\w*$/.test(line)) {
+            diagnostics.push({
+                level: "error",
+                line: index + 1,
+                message: `Unexpected identifier '${line}'. Add a C declaration, statement, or function definition.`,
+            });
+            return;
+        }
+        if (/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(line)) {
+            diagnostics.push({
+                level: "error",
+                line: index + 1,
+                message: `Unexpected value '${line}'. A value must be part of a C expression or declaration.`,
+            });
+        }
+    });
 }
 function maskCommentsAndStrings(source) {
     let out = "";

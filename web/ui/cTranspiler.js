@@ -697,7 +697,7 @@ function transpileStatement(statement, lineOffset, ctx) {
         }
         return { code: emitAssignToTarget(left, assign[2], ctx, line), needDelay: false, needWrite: false };
     }
-    ctx.diagnostics.push({ level: "warning", line, message: `C line not translated: ${raw}` });
+    ctx.diagnostics.push({ level: "error", line, message: `C line not translated: ${raw}` });
     return { code: [], needDelay: false, needWrite: false };
 }
 const HARDWARE_COMMANDS = new Set([

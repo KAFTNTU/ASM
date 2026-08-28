@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { ADUC841_BITS, ADUC841_INTERRUPT_VECTORS, ADUC841_SFR } from "../web/mcu/aduc841.js";
 import { compileAsm } from "../web/ui/asmCompiler.js";
+import { checkC } from "../web/ui/cChecker.js";
 import { transpileCToAsm } from "../web/ui/cTranspiler.js";
 import { getCodeCompletions } from "../web/ui/codeCompletions.js";
 
@@ -111,6 +112,25 @@ assert.deepEqual(
   [],
   beginnerAsm.diagnostics.map((item) => item.message).join("\n"),
 );
+
+// C editor diagnostics must point to the same source lines as ASM diagnostics.
+// A bare token is not a C statement, so it should be underlined immediately
+// instead of only producing a line-less "main() was not found" message.
+const invalidC = checkC("pokpkp\njjioijoij9j");
+assert.deepEqual(
+  invalidC.diagnostics.filter((item) => item.level === "error").map((item) => item.line),
+  [1, 2],
+  "bare C tokens must produce line-specific errors",
+);
+
+const unsupportedStatementC = transpileCToAsm(`
+void main(void) {
+  pokpkp;
+}
+`);
+const unsupportedErrors = unsupportedStatementC.diagnostics.filter((item) => item.level === "error");
+assert.equal(unsupportedErrors.length, 1, "unsupported C statements must be errors");
+assert.equal(unsupportedErrors[0].line, 3, "unsupported C statements must retain their source line");
 
 const hardwareCommandsC = `
 sbit READY = P1^0;
