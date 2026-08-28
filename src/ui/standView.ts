@@ -19,6 +19,14 @@ import {
 } from "./codeCompletions";
 
 type UiLanguage = "en" | "uk";
+type EditorSnapshot = {
+  value: string;
+  selectionStart: number;
+  selectionEnd: number;
+};
+
+const EDITOR_UNDO_GROUP_MS = 700;
+const EDITOR_HISTORY_LIMIT = 300;
 
 const UI_LANGUAGE_KEY = "st841.ui.language";
 const UI_TEXT = {
@@ -458,10 +466,108 @@ export function renderStand(params) {
     let autocompleteMatches = [];
     let autocompletePrefix = "";
     let autocompleteReplaceStart = 0;
-    let autocompleteReplaceEnd = 0;
-    let autocompleteUserSelected = false;
-    editor.value = "";
-    function currentEditorSignature() {
+  let autocompleteReplaceEnd = 0;
+  let autocompleteUserSelected = false;
+  editor.value = "";
+  let editorHistoryCurrent: EditorSnapshot = captureEditorSnapshot();
+  let editorUndoStack: EditorSnapshot[] = [];
+  let editorRedoStack: EditorSnapshot[] = [];
+  let editorLastInputKind = "";
+  let editorLastInputAt = 0;
+
+  function captureEditorSnapshot(): EditorSnapshot {
+    return {
+      value: editor.value,
+      selectionStart: editor.selectionStart ?? editor.value.length,
+      selectionEnd: editor.selectionEnd ?? editor.value.length,
+    };
+  }
+
+  function resetEditorHistory(): void {
+    editorHistoryCurrent = captureEditorSnapshot();
+    editorUndoStack = [];
+    editorRedoStack = [];
+    editorLastInputKind = "";
+    editorLastInputAt = 0;
+  }
+
+  function inputKind(event: Event): string {
+    const type = (event as InputEvent).inputType || "programmatic";
+    if (type.startsWith("insert") && type !== "insertFromPaste") return "insert";
+    if (type.startsWith("delete")) return "delete";
+    return type;
+  }
+
+  function recordEditorInput(event: Event): void {
+    const next = captureEditorSnapshot();
+    const previous = editorHistoryCurrent;
+    if (next.value === previous.value && next.selectionStart === previous.selectionStart && next.selectionEnd === previous.selectionEnd) return;
+
+    const kind = inputKind(event);
+    const now = performance.now();
+    const canGroup =
+      kind === editorLastInputKind &&
+      now - editorLastInputAt <= EDITOR_UNDO_GROUP_MS &&
+      previous.selectionStart === previous.selectionEnd &&
+      next.selectionStart === next.selectionEnd;
+    if (!canGroup) {
+      editorUndoStack.push(previous);
+      if (editorUndoStack.length > EDITOR_HISTORY_LIMIT) editorUndoStack.shift();
+    }
+    editorHistoryCurrent = next;
+    editorRedoStack = [];
+    editorLastInputKind = kind;
+    editorLastInputAt = now;
+  }
+
+  function applyEditorSnapshot(snapshot: EditorSnapshot): void {
+    editor.value = snapshot.value;
+    const start = Math.max(0, Math.min(snapshot.selectionStart, editor.value.length));
+    const end = Math.max(start, Math.min(snapshot.selectionEnd, editor.value.length));
+    editor.setSelectionRange(start, end);
+    editor.focus();
+    refreshEditorAfterChange();
+  }
+
+  function undoEditor(): void {
+    const target = editorUndoStack.pop();
+    if (!target) return;
+    editorRedoStack.push(editorHistoryCurrent);
+    editorHistoryCurrent = target;
+    editorLastInputKind = "";
+    editorLastInputAt = 0;
+    closeAutocomplete();
+    applyEditorSnapshot(target);
+  }
+
+  function redoEditor(): void {
+    const target = editorRedoStack.pop();
+    if (!target) return;
+    editorUndoStack.push(editorHistoryCurrent);
+    editorHistoryCurrent = target;
+    editorLastInputKind = "";
+    editorLastInputAt = 0;
+    closeAutocomplete();
+    applyEditorSnapshot(target);
+  }
+
+  function refreshEditorAfterChange(): void {
+    programLoaded = false;
+    updateLineNumbers();
+    updateSyntaxHighlight();
+    syncEditorScrollSlider();
+    updateAutocomplete();
+    updateAutosaveButton();
+    scheduleAutosave();
+    if (inputDebounce != null) window.clearTimeout(inputDebounce);
+    inputDebounce = window.setTimeout(() => {
+      updateSyntaxHighlight();
+      compileAndRender(false);
+      inputDebounce = null;
+    }, 120);
+  }
+
+  function currentEditorSignature() {
         return JSON.stringify({ name: fileNameInput.value || "main", mode: sourceMode, text: editor.value });
     }
     function currentFileName() {
@@ -519,6 +625,7 @@ export function renderStand(params) {
             modeSelect.value = sourceMode;
             modeTag.textContent = sourceMode.toUpperCase();
             editor.value = String(payload.text || "").replace(/\r\n?/g, "\n");
+            resetEditorHistory();
             lastSavedSignature = currentEditorSignature();
             updateAutosaveButton();
             messagesMeta.textContent = `${t("restored")} ${currentFileName()}`;
@@ -653,6 +760,7 @@ export function renderStand(params) {
         modeSelect.value = sourceMode;
         modeTag.textContent = sourceMode.toUpperCase();
         editor.value = String(text).replace(/\r\n?/g, "\n");
+        resetEditorHistory();
         updateLineNumbers();
         updateSyntaxHighlight();
         compileAndRender(false);
@@ -698,6 +806,19 @@ export function renderStand(params) {
     }, { passive: true });
     editor.addEventListener("keydown", (event) => {
         const key = event.key.toLowerCase();
+        if ((event.ctrlKey || event.metaKey) && key === "z") {
+            event.preventDefault();
+            if (event.shiftKey)
+                redoEditor();
+            else
+                undoEditor();
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && key === "y") {
+            event.preventDefault();
+            redoEditor();
+            return;
+        }
         if ((event.ctrlKey || event.metaKey) && key === "s") {
             event.preventDefault();
             if (event.shiftKey)
@@ -740,21 +861,9 @@ export function renderStand(params) {
             closeAutocomplete();
         }
     });
-    editor.addEventListener("input", () => {
-        programLoaded = false;
-        updateLineNumbers();
-        updateSyntaxHighlight();
-        syncEditorScrollSlider();
-        updateAutocomplete();
-        updateAutosaveButton();
-        scheduleAutosave();
-        if (inputDebounce != null)
-            window.clearTimeout(inputDebounce);
-        inputDebounce = window.setTimeout(() => {
-            updateSyntaxHighlight();
-            compileAndRender(false);
-            inputDebounce = null;
-        }, 120);
+    editor.addEventListener("input", (event) => {
+        recordEditorInput(event);
+        refreshEditorAfterChange();
     });
     editor.addEventListener("paste", (event) => {
         const clip = event.clipboardData?.getData("text");
