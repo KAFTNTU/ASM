@@ -160,13 +160,147 @@ await runRuntime(sizeAndAddress.assembled.hex, {
   xram: new Map([[0x000F, 0xCD], [0x0010, 0xAB]]),
 });
 
+const longDivision = expectSuccessfulProgram("32-bit division and remainder runtime", `
+void main(void) {
+  unsigned long dividend = 0x12345678UL;
+  unsigned long divisor = 0x1000UL;
+  unsigned long quotient = dividend / divisor;
+  unsigned long remainder = dividend % divisor;
+  P0 = quotient;
+  P1 = remainder;
+  while (1) { }
+}
+`);
+await runRuntime(longDivision.assembled.hex, {
+  ports: new Map([[0x80, 0x45], [0x90, 0x78]]),
+  xram: new Map(),
+});
+
+const signedLong = expectSuccessfulProgram("signed 32-bit arithmetic runtime", `
+void main(void) {
+  long negative = -13;
+  long positive = 5;
+  P0 = negative / positive;
+  P1 = negative % positive;
+  if (negative < positive) P2 = 1;
+  else P2 = 0;
+  while (1) { }
+}
+`);
+await runRuntime(signedLong.assembled.hex, {
+  ports: new Map([[0x80, 0xFE], [0x90, 0xFD], [0xA0, 1]]),
+  xram: new Map(),
+});
+
+const longVariableShift = expectSuccessfulProgram("32-bit variable shifts runtime", `
+void main(void) {
+  unsigned long value = 3UL;
+  unsigned char shift = 4;
+  P0 = value << shift;
+  P1 = value >> shift;
+  while (1) { }
+}
+`);
+await runRuntime(longVariableShift.assembled.hex, {
+  ports: new Map([[0x80, 0x30], [0x90, 0x00]]),
+  xram: new Map(),
+});
+
+const longSwitch = expectSuccessfulProgram("32-bit switch dispatch runtime", `
+void main(void) {
+  unsigned long state = 0x12345678UL;
+  switch (state) {
+    case 0x12345678UL:
+      P0 = 0x5A;
+      break;
+    default:
+      P0 = 0xA5;
+  }
+  while (1) { }
+}
+`);
+await runRuntime(longSwitch.assembled.hex, {
+  ports: new Map([[0x80, 0x5A]]),
+  xram: new Map(),
+});
+
+const floatReturn = expectSuccessfulProgram("float function return runtime", `
+float sample(void) {
+  return 1.5f;
+}
+void main(void) {
+  float value = sample();
+  if (value == 1.5f) P0 = 0x5A;
+  else P0 = 0xA5;
+  while (1) { }
+}
+`);
+await runRuntime(floatReturn.assembled.hex, {
+  ports: new Map([[0x80, 0x5A]]),
+  xram: new Map(),
+});
+
+const floatArithmetic = expectSuccessfulProgram("runtime float addition subtraction multiplication", `
+void main(void) {
+  float a = 1.5f;
+  float b = 2.25f;
+  float sum = a + b;
+  float difference = b - a;
+  float product = a * b;
+  if (sum == 3.75f) P0 = 0x5A;
+  else P0 = 0xA5;
+  if (difference == 0.75f) P1 = 0x5A;
+  else P1 = 0xA5;
+  if (product == 3.375f) P2 = 0x5A;
+  else P2 = 0xA5;
+  while (1) { }
+}
+`);
+await runRuntime(floatArithmetic.assembled.hex, {
+  ports: new Map([[0x80, 0x5A], [0x90, 0x5A], [0xA0, 0x5A]]),
+  xram: new Map(),
+});
+
+const floatCompound = expectSuccessfulProgram("runtime float compound operators", `
+void main(void) {
+  float value = 1.5f;
+  value += 2.25f;
+  value -= 1.5f;
+  value *= 2.0f;
+  value++;
+  value--;
+  if (value == 4.5f) P0 = 0x5A;
+  else P0 = 0xA5;
+  while (1) { }
+}
+`);
+await runRuntime(floatCompound.assembled.hex, {
+  ports: new Map([[0x80, 0x5A]]),
+  xram: new Map(),
+});
+
+const structCopy = expectSuccessfulProgram("complete struct assignment runtime", `
+struct Packet { unsigned char tag; unsigned int value; };
+struct Packet xdata source = { 7, 0x1234 };
+struct Packet xdata target;
+void main(void) {
+  target = source;
+  P0 = target.tag;
+  P1 = target.value;
+  while (1) { }
+}
+`);
+await runRuntime(structCopy.assembled.hex, {
+  ports: new Map([[0x80, 7], [0x90, 0x34]]),
+  xram: new Map([[0x0003, 7], [0x0004, 0x34], [0x0005, 0x12]]),
+});
+
 for (const [name, source, pattern] of [
   ["IRAM structure overflow", `struct Big { unsigned char bytes[81]; }; struct Big object; void main(void) { }`, /exceeds internal RAM|Out of local variable storage/i],
   ["XDATA structure overflow", `struct Big { unsigned char bytes[1025]; }; struct Big xdata objects[2]; void main(void) { }`, /exceeds ADuC841 XDATA/i],
   ["unknown field", `struct Sample { unsigned char value; }; void main(void) { struct Sample sample; sample.missing = 1; }`, /has no field named missing/i],
   ["const structure pointer write", `struct Sample { unsigned char value; }; struct Sample xdata sample; void main(void) { const struct Sample xdata *pointer = &sample; pointer->value = 1; }`, /const\/code structure object or pointer/i],
   ["code structure pointer write", `struct Sample { unsigned char value; }; void main(void) { struct Sample code *pointer = 0x100; pointer->value = 1; }`, /const\/code structure object or pointer/i],
-  ["union unsupported", `union Value { unsigned char byte; unsigned int word; }; void main(void) { union Value value; }`, /union is not implemented/i],
   ["far structure object", `struct Sample { unsigned char value; }; struct Sample far sample; void main(void) { }`, /far object storage is not implemented/i],
   ["pdata structure object", `struct Sample { unsigned char value; }; struct Sample pdata sample; void main(void) { }`, /pdata object storage is not implemented/i],
   ["nonconstant aggregate", `unsigned char source; struct Sample { unsigned char value; }; struct Sample xdata sample = { source }; void main(void) { }`, /constant integer expressions/i],
@@ -178,7 +312,7 @@ for (const [name, source, pattern] of [
   assert.ok(errors(result).some((item) => pattern.test(item.message)), `${name}: missing diagnostic ${pattern}\n${errors(result).map((item) => item.message).join("\n")}`);
 }
 
-console.log("C51 RAM/XDATA structure tests passed (4 positive programs, 2 WASM runtime checks, 11 negative groups)");
+console.log("C51 RAM/XDATA structure tests passed (11 positive programs, 10 WASM runtime checks, 10 negative groups)");
 
 async function runRuntime(hex, expected) {
   const wasmBytes = fs.readFileSync(new URL("../public/emu8051.wasm", import.meta.url));

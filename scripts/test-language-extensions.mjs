@@ -87,6 +87,69 @@ assert.deepEqual(
   compiledC.diagnostics.map((item) => item.message).join("\n"),
 );
 
+// The first program a beginner normally writes uses the hosted C signature
+// `int main()` and may include the standard fixed-width header.  Keep this as
+// a regression test because the simulator accepts both `main()` and `main(void)`.
+const beginnerC = [
+  "#include <stdint.h>",
+  "int main() {",
+  "  uint8_t value = 0;",
+  "  if (value == 0) P0 = 0x55;",
+  "  return 0;",
+  "}",
+].join("\n");
+const beginnerResult = transpileCToAsm(beginnerC);
+assert.deepEqual(
+  beginnerResult.diagnostics.filter((item) => item.level === "error"),
+  [],
+  beginnerResult.diagnostics.map((item) => item.message).join("\n"),
+);
+assert.match(beginnerResult.asm, /lcall main/i);
+const beginnerAsm = compileAsm(beginnerResult.asm);
+assert.deepEqual(
+  beginnerAsm.diagnostics.filter((item) => item.level === "error"),
+  [],
+  beginnerAsm.diagnostics.map((item) => item.message).join("\n"),
+);
+
+const hardwareCommandsC = `
+sbit READY = P1^0;
+void main(void) {
+  set_bit(READY);
+  clear_bit(P1.1);
+  toggle_bit(P1.2);
+  pulse_bit(P1.3);
+  if (read_bit(READY)) clear_bit(READY);
+  enable_interrupts();
+  disable_interrupts();
+  start_timer0();
+  stop_timer0();
+  start_timer1();
+  stop_timer1();
+  enable_uart();
+  disable_uart();
+  clear_uart_flags();
+  while (1) { }
+}
+`;
+const hardwareResult = transpileCToAsm(hardwareCommandsC);
+assert.deepEqual(
+  hardwareResult.diagnostics.filter((item) => item.level === "error"),
+  [],
+  hardwareResult.diagnostics.map((item) => item.message).join("\n"),
+);
+for (const pattern of [
+  /setb p1\.0/i, /clr p1\.1/i, /cpl p1\.2/i, /setb p1\.3/i, /clr p1\.3/i,
+  /setb ea/i, /clr ea/i, /setb tr0/i, /clr tr0/i, /setb tr1/i, /clr tr1/i,
+  /setb ren/i, /clr ren/i, /clr ri/i, /clr ti/i,
+]) assert.match(hardwareResult.asm, pattern);
+const compiledHardware = compileAsm(hardwareResult.asm);
+assert.deepEqual(
+  compiledHardware.diagnostics.filter((item) => item.level === "error"),
+  [],
+  compiledHardware.diagnostics.map((item) => item.message).join("\n"),
+);
+
 const asmSource = `MY_LABEL:\nVALUE EQU 1\nCUSTOM SFR 80H`;
 const asmLabels = getCodeCompletions("asm", asmSource, "my_", 200);
 assert.ok(asmLabels.some((item) => item.label === "MY_LABEL" && item.category === "Current file label"));
@@ -96,6 +159,9 @@ assert.ok(getCodeCompletions("asm", asmSource, "timer", 200).some((item) => item
 
 const cSource = `#define FEATURE 1\nunsigned char helper(unsigned char value) { return value; }\nvoid main(void) { unsigned char local = 0; }`;
 assert.ok(getCodeCompletions("c", cSource, "help", 200).some((item) => item.label === "helper()"));
+assert.ok(getCodeCompletions("c", cSource, "set_bit", 200).some((item) => item.insertText.startsWith("set_bit")));
+assert.ok(getCodeCompletions("c", cSource, "starter", 200).some((item) => item.label === "Beginner C51 program"));
+assert.ok(getCodeCompletions("c", cSource, "int main", 200).some((item) => item.insertText.startsWith("int main")));
 assert.equal(getCodeCompletions("c", cSource, "inter", 200).filter((item) => item.category === "Interrupt").length, 11);
 assert.ok(getCodeCompletions("c", cSource, "if", 200).some((item) => item.insertText.startsWith("#ifdef")));
 assert.ok(getCodeCompletions("c", cSource, "dac", 200).some((item) => item.insertText.includes("DAC0H")));

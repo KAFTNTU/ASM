@@ -226,12 +226,12 @@ void main(void) { }
 assert.ok(errors(cyclicTypedef).some((item) => item.message.includes("Cyclic typedef chain")));
 
 const unsupportedTypedef = transpileCToAsm(`
-typedef struct { unsigned char value; } Anonymous;
+typedef unsigned char *BytePtr;
 void main(void) { }
 `);
 assert.ok(errors(unsupportedTypedef).some((item) => item.message.includes("Unsupported typedef form")));
 
-const unsupportedArithmetic = transpileCToAsm(`
+const arithmeticDiagnostics = transpileCToAsm(`
 void main(void) {
   uint32_t wide = 1;
   float ratio = 1.0f;
@@ -239,11 +239,44 @@ void main(void) {
   P0 = 1L;
 }
 `);
-assert.equal(unsupportedArithmetic.ok, false);
-assert.ok(errors(unsupportedArithmetic).some((item) => item.message.includes("32-bit integer lowering")));
-assert.ok(errors(unsupportedArithmetic).some((item) => item.message.includes("Floating-point lowering")));
-assert.ok(errors(unsupportedArithmetic).some((item) => item.message.includes("Floating-point literals")));
-assert.ok(errors(unsupportedArithmetic).some((item) => item.message.includes("long literal")));
+assert.equal(arithmeticDiagnostics.ok, false, "fractional values assigned to integer variables must still be rejected");
+assert.ok(errors(arithmeticDiagnostics).some((item) => item.message.includes("Floating-point literals")));
+assert.ok(!errors(arithmeticDiagnostics).some((item) => item.message.includes("32-bit integer lowering")));
+assert.ok(!errors(arithmeticDiagnostics).some((item) => item.message.includes("Floating-point lowering")));
+assert.ok(!errors(arithmeticDiagnostics).some((item) => item.message.includes("long literal")));
+
+const wideAndFloat = expectSuccessfulProgram("32-bit long and float constants", `
+long total = 0x12345678L;
+float ratio = 1.5f;
+void main(void) {
+  long value = 1;
+  value = value + total;
+  ratio = 2.25f;
+  P0 = value;
+}
+`);
+assert.match(wideAndFloat.asm, /mov 0x[0-9a-f]+,#0x78\nmov 0x[0-9a-f]+,#0x56\nmov 0x[0-9a-f]+,#0x34\nmov 0x[0-9a-f]+,#0x12/i);
+assert.match(wideAndFloat.asm, /mov 0x[0-9a-f]+,#0x0\nmov 0x[0-9a-f]+,#0x0\nmov 0x[0-9a-f]+,#0x10\nmov 0x[0-9a-f]+,#0x40/i);
+
+expectSuccessfulProgram("union shared storage", `
+union Value { unsigned char byte; unsigned int word; };
+void main(void) {
+  union Value value = { 0x12 };
+  value.word = 0x3456;
+  P0 = value.byte;
+}
+`);
+
+expectSuccessfulProgram("anonymous struct and union typedefs", `
+typedef struct { unsigned char lo; unsigned char hi; } Pair;
+typedef union { unsigned char byte; unsigned int word; } Value;
+void main(void) {
+  Pair pair = { 1, 2 };
+  Value value;
+  value.word = 0x1234;
+  P0 = pair.hi + value.byte;
+}
+`);
 
 const xdataMemory = expectSuccessfulProgram("xdata pointer MOVX lowering", `
 void main(void) {
@@ -293,4 +326,4 @@ void main(void) { globalPointer = 0x1234; P0 = globalPointer; }
 `);
 assert.match(globalPointer.asm, /mov 0x[0-9a-f]+,#0x34\nmov 0x[0-9a-f]+,#0x12/i);
 
-console.log("Extended C51 correctness tests passed (9 programs + 9 negative groups)");
+console.log("Extended C51 correctness tests passed (10 programs + 9 negative groups)");

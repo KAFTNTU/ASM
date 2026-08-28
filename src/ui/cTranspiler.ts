@@ -39,10 +39,31 @@ type ParamInfo = {
   argAddr?: number;
   size?: number;
   signed?: boolean;
+  category?: ScalarTypeInfo["category"];
   pointeeSize?: number;
 };
-type FunctionInfo = { name: string; body: string; lineOffset: number; order: number; params: ParamInfo[]; returnSize: number; interruptNumber?: number; usingBank?: number; rangeStart: number; rangeEnd: number };
-type ScalarVar = { name: string; addr: number; size: number; isConst?: boolean; signed?: boolean };
+type FunctionInfo = {
+  name: string;
+  body: string;
+  lineOffset: number;
+  order: number;
+  params: ParamInfo[];
+  returnSize: number;
+  returnCategory?: ScalarTypeInfo["category"];
+  returnSigned?: boolean;
+  interruptNumber?: number;
+  usingBank?: number;
+  rangeStart: number;
+  rangeEnd: number;
+};
+type ScalarVar = {
+  name: string;
+  addr: number;
+  size: number;
+  isConst?: boolean;
+  signed?: boolean;
+  category?: ScalarTypeInfo["category"];
+};
 type XdataVar = ScalarVar;
 type LocalArrayVar = { name: string; baseAddr: number; length: number; elementSize: number; elementCount: number };
 type XdataArrayVar = LocalArrayVar;
@@ -54,9 +75,10 @@ type StructField = {
   elementSize: number;
   elementCount: number;
   signed: boolean;
+  category?: ScalarTypeInfo["category"];
   structName?: string;
 };
-type StructDef = { name: string; fields: StructField[]; size: number };
+type StructDef = { name: string; fields: StructField[]; size: number; kind?: "struct" | "union" };
 type StructVar = {
   name: string;
   structName: string;
@@ -86,6 +108,7 @@ type TranspileContext = {
   arrays: Map<string, CodeArrayVar>;
   structDefs: Map<string, StructDef>;
   functions: Map<string, FunctionInfo>;
+  returnSlots: Map<string, ScalarVar>;
   diagnostics: AsmDiagnostic[];
   vars: Map<string, ScalarVar>;
   globalVars: Map<string, ScalarVar>;
@@ -104,6 +127,10 @@ type TranspileContext = {
   nextVarAddr: { value: number };
   nextXdataAddr: { value: number };
   labelCounter: { value: number };
+  // Scratch storage used by runtime float helpers. Reusing a depth-specific
+  // slot keeps sequential expressions from consuming all IRAM locals while
+  // still giving nested expressions independent temporaries.
+  floatScratchDepth: number;
 };
 
 const ARG_BASE = 0x20;
@@ -120,7 +147,6 @@ export function transpileCToAsm(source: string): CTranspileResult {
   const preprocessed = preprocessC(uncommented, diagnostics);
   const typedefs = expandTypedefAliases(preprocessed, diagnostics);
   const text = normalizeControlFlowBodies(typedefs.source);
-  if (/\bunion\b/i.test(text)) diagnostics.push({ level: "error", message: "union is not implemented by the browser C51 backend." });
   const sbitMap = parseSbits(text);
   const { sfrMap, sfr16Map } = parseSfrs(text, diagnostics);
   const arrays = parseArrays(text, diagnostics);
@@ -140,6 +166,7 @@ export function transpileCToAsm(source: string): CTranspileResult {
   const nextXdataAddr = { value: XDATA_BASE };
   const globals = parseGlobalScalars(text, functions, arrays, structDefs, nextVarAddr, nextXdataAddr, diagnostics);
   allocateFunctionParams(functions, structDefs, nextVarAddr, diagnostics);
+  const returnSlots = allocateFunctionReturnSlots(functions, nextVarAddr, diagnostics);
 
   for (const [name, value] of sfrMap) emitted.push(`${name} data ${value}`);
   if (sfrMap.size) emitted.push("");
@@ -191,6 +218,7 @@ export function transpileCToAsm(source: string): CTranspileResult {
       arrays,
       structDefs,
       functions,
+      returnSlots,
       diagnostics,
       vars: new Map(),
       globalVars: globals.vars,
@@ -209,6 +237,7 @@ export function transpileCToAsm(source: string): CTranspileResult {
       nextVarAddr,
       nextXdataAddr,
       labelCounter,
+      floatScratchDepth: 0,
     };
     bindFunctionParams(fn, fnCtx, diagnostics);
     const statements = splitStatements(fn.body);
@@ -386,16 +415,35 @@ function transpileStatement(
           continue;
         }
         const values: number[] = [];
+        const byteValues: number[] = [];
+        const isFloatArray = declaration.category === "floating" && declaration.size === 4;
         if (localArray[3]?.trim().startsWith("\"")) {
           for (const ch of decodeCString(localArray[3])) values.push(ch.charCodeAt(0) & 0xff);
           values.push(0);
         } else if (localArray[3]) {
-          for (const token of splitCsv(localArray[3].trim().slice(1, -1))) values.push(tryEvalConst(token) ?? 0);
+          for (const token of splitCsv(localArray[3].trim().slice(1, -1))) {
+            if (isFloatArray) {
+              const floatValue = tryEvalFloatConst(token);
+              if (floatValue == null) {
+                ctx.diagnostics.push({ level: "error", line, message: `Float array element could not be parsed: ${token.trim()}` });
+                continue;
+              }
+              const bytes = new Uint8Array(4);
+              new DataView(bytes.buffer).setFloat32(0, floatValue, true);
+              byteValues.push(...bytes);
+            } else {
+              values.push((declaration.size >= 4 ? tryEvalConstWide(token) : tryEvalConst(token)) ?? 0);
+            }
+          }
         }
-        const logicalLength = (tryEvalConst(localArray[2]) ?? values.length) || 1;
+        const initializerCount = isFloatArray ? Math.floor(byteValues.length / 4) : values.length;
+        const logicalLength = (tryEvalConst(localArray[2]) ?? initializerCount) || 1;
         const byteLength = Math.max(1, logicalLength * declaration.size);
         const name = localArray[1].toLowerCase();
-        const bytes = expandElementBytes(values, declaration.size, logicalLength);
+        if (isFloatArray) {
+          while (byteValues.length < byteLength) byteValues.push(0);
+        }
+        const bytes = isFloatArray ? byteValues.slice(0, byteLength) : expandElementBytes(values, declaration.size, logicalLength);
         if (declaration.memorySpace === "xdata") {
           const baseAddr = allocateXdataBlock(ctx, byteLength, line, `Local XDATA array ${name}`);
           ctx.xdataArrays.set(name, { name, baseAddr, length: byteLength, elementSize: declaration.size, elementCount: logicalLength });
@@ -435,13 +483,14 @@ function transpileStatement(
       const name = match[1].toLowerCase();
       if (declaration.memorySpace === "xdata") {
         const addr = allocateXdataBlock(ctx, declaration.size, line, `Local XDATA variable ${name}`);
-        const variable: XdataVar = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned };
+        const variable: XdataVar = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned, category: scalarTypeInfo(declaration.header)?.category };
         ctx.xdataVars.set(name, variable);
         if (match[2]) out.push(...emitAssignToXdataVariable(variable, match[2], ctx, line));
       } else {
         const variable = ensureVar(ctx, name, line, declaration.size);
         variable.isConst = declaration.isConst;
         variable.signed = declaration.isSigned;
+        variable.category = scalarTypeInfo(declaration.header)?.category;
         if (match[2]) out.push(...emitAssignToVariable(variable, match[2], ctx, line));
       }
     }
@@ -591,8 +640,26 @@ function transpileStatement(
     return { code: ["nop"], needDelay: false, needWrite: false };
   }
 
+  const hardwareCommand = emitHardwareCommand(rawNoSemi, ctx, line);
+  if (hardwareCommand) {
+    return { code: hardwareCommand, needDelay: false, needWrite: false };
+  }
+
   const returnExpr = /^return\s+([\s\S]+?)\s*;?$/i.exec(raw);
   if (returnExpr) {
+    if (ctx.currentFunction.returnSize >= 4 && ctx.currentFunction.returnCategory === "integer") {
+      const slot = ctx.returnSlots.get(ctx.currentFunction.name);
+      const valueCode = emitExprToLong(returnExpr[1], ctx, line);
+      if (slot) valueCode.push(...copyScalarBytes(ensureVar(ctx, "__long_result", line, 4), slot, 4));
+      return { code: [...valueCode, `ljmp ${ctx.returnLabel}`], needDelay: false, needWrite: false };
+    }
+    if (ctx.currentFunction.returnCategory === "floating") {
+      const temporary = ensureVar(ctx, "__float_return", line, 4);
+      const valueCode = emitFloatExprToTarget(returnExpr[1], temporary, ctx, line);
+      const slot = ctx.returnSlots.get(ctx.currentFunction.name);
+      if (slot) valueCode.push(...copyScalarBytes(temporary, slot, 4));
+      return { code: [...valueCode, `ljmp ${ctx.returnLabel}`], needDelay: false, needWrite: false };
+    }
     const valueCode = ctx.currentFunction.returnSize >= 2
       ? emitExprToWord(returnExpr[1], ctx, line)
       : emitExprToA(returnExpr[1], ctx, line);
@@ -709,6 +776,19 @@ function transpileStatement(
 
   const assign = /^([A-Za-z_]\w*)\s*=\s*([\s\S]+?)\s*;?$/.exec(raw);
   if (assign) {
+    const leftStruct = resolveDirectStructObject(assign[1], ctx);
+    const rightStruct = resolveDirectStructObject(assign[2], ctx);
+    if (leftStruct || rightStruct) {
+      if (!leftStruct) {
+        ctx.diagnostics.push({ level: "error", line, message: `Unknown structure assignment target: ${assign[1]}.` });
+        return { code: [], needDelay: false, needWrite: false };
+      }
+      if (!rightStruct) {
+        ctx.diagnostics.push({ level: "error", line, message: `Structure assignment requires a compatible structure source: ${assign[2]}.` });
+        return { code: [], needDelay: false, needWrite: false };
+      }
+      return { code: emitCopyStructObject(leftStruct, rightStruct, ctx, line), needDelay: false, needWrite: false };
+    }
     const leftName = assign[1].toLowerCase();
     const variable = resolveVariable(leftName, ctx);
     if (variable) {
@@ -756,6 +836,62 @@ function transpileStatement(
 
   ctx.diagnostics.push({ level: "warning", line, message: `C line not translated: ${raw}` });
   return { code: [], needDelay: false, needWrite: false };
+}
+
+const HARDWARE_COMMANDS = new Set([
+  "set_bit", "clear_bit", "toggle_bit", "pulse_bit", "wait_bit_high", "wait_bit_low",
+  "enable_interrupts", "disable_interrupts", "start_timer0", "stop_timer0", "start_timer1", "stop_timer1",
+  "enable_uart", "disable_uart", "clear_uart_flags",
+]);
+
+function resolveBitOperand(raw: string, ctx: TranspileContext): string | null {
+  const text = trimOuter(raw.trim()).toLowerCase();
+  const named = ctx.sbitMap.get(text);
+  if (named) return named;
+  return /^p[0-3]\.[0-7]$/.test(text) ? text : null;
+}
+
+function emitHardwareCommand(raw: string, ctx: TranspileContext, line: number): string[] | null {
+  const match = /^([A-Za-z_]\w*)\s*\(([\s\S]*)\)$/.exec(raw.trim());
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  if (!HARDWARE_COMMANDS.has(name) || ctx.functions.has(name)) return null;
+  const args = splitCsv(match[2]);
+  const bitCommand = /^(?:set_bit|clear_bit|toggle_bit|pulse_bit|wait_bit_high|wait_bit_low)$/.test(name);
+  if (bitCommand) {
+    if (args.length !== 1) {
+      ctx.diagnostics.push({ level: "error", line, message: `${name} requires exactly one sbit or P0.0..P3.7 argument.` });
+      return [];
+    }
+    const bit = resolveBitOperand(args[0], ctx);
+    if (!bit) {
+      ctx.diagnostics.push({ level: "error", line, message: `${name} requires an sbit name or a direct P0.0..P3.7 bit.` });
+      return [];
+    }
+    if (name === "set_bit") return [`setb ${bit}`];
+    if (name === "clear_bit") return [`clr ${bit}`];
+    if (name === "toggle_bit") return [`cpl ${bit}`];
+    if (name === "pulse_bit") return [`setb ${bit}`, `clr ${bit}`];
+    const loop = nextLabel(ctx, name === "wait_bit_high" ? "wait_bit_high" : "wait_bit_low");
+    return name === "wait_bit_high" ? [`${loop}:`, `jnb ${bit},${loop}`] : [`${loop}:`, `jb ${bit},${loop}`];
+  }
+
+  if (args.length !== 0) {
+    ctx.diagnostics.push({ level: "error", line, message: `${name} does not take arguments.` });
+    return [];
+  }
+  switch (name) {
+    case "enable_interrupts": return ["setb ea"];
+    case "disable_interrupts": return ["clr ea"];
+    case "start_timer0": return ["setb tr0"];
+    case "stop_timer0": return ["clr tr0"];
+    case "start_timer1": return ["setb tr1"];
+    case "stop_timer1": return ["clr tr1"];
+    case "enable_uart": return ["setb ren"];
+    case "disable_uart": return ["clr ren"];
+    case "clear_uart_flags": return ["clr ri", "clr ti"];
+    default: return null;
+  }
 }
 
 type FunctionMacro = { params: string[]; body: string; line: number };
@@ -1128,7 +1264,7 @@ type SourceRange = { start: number; end: number };
 function collectTypedefShadowRanges(source: string, name: string): SourceRange[] {
   const mask = lexicalCodeMask(source);
   const code = Array.from(source, (ch, index) => mask[index] || ch === "\n" ? ch : " ").join("");
-  const typeToken = `(?:${C_TYPE_QUALIFIER_SOURCE}|${C_SCALAR_TYPE_SOURCE}|struct\\s+[A-Za-z_]\\w*)`;
+    const typeToken = `(?:${C_TYPE_QUALIFIER_SOURCE}|${C_SCALAR_TYPE_SOURCE}|(?:struct|union)\\s+[A-Za-z_]\\w*)`;
   const declaration = new RegExp(
     `(?:(?:${typeToken})\\s+)+(${escapeRegExp(name)})\\b(?=\\s*(?:=|;|,|\\[|\\)))`,
     "gi",
@@ -1198,6 +1334,7 @@ type TypedefSpan = { start: number; end: number; line: number; text: string };
 function expandTypedefAliases(source: string, diagnostics: AsmDiagnostic[]): { source: string; aliases: Map<string, string> } {
   const spans = findTypedefSpans(source, diagnostics);
   const rawAliases = new Map<string, RawTypedef>();
+  const syntheticAggregates: string[] = [];
   const chars = source.split("");
 
   for (const span of spans) {
@@ -1212,11 +1349,18 @@ function expandTypedefAliases(source: string, diagnostics: AsmDiagnostic[]): { s
     }
     const name = alias[1];
     const target = body.slice(0, alias.index).trim();
+    const anonymousAggregate = /^(struct|union)\s*\{([\s\S]*)\}$/i.exec(target);
+    if (anonymousAggregate) {
+      const syntheticName = `__c_typedef_${name.toLowerCase()}`;
+      syntheticAggregates.push(`${anonymousAggregate[1].toLowerCase()} ${syntheticName} {${anonymousAggregate[2]}};`);
+      rawAliases.set(name, { name, target: `${anonymousAggregate[1].toLowerCase()} ${syntheticName}`, line: span.line });
+      continue;
+    }
     if (!target || /[{}*\[\](),]/.test(target) || /^enum\b/i.test(target)) {
       diagnostics.push({
         level: "error",
         line: span.line,
-        message: `Unsupported typedef form for ${name}; only scalar aliases and 'typedef struct Tag Alias' are implemented.`,
+        message: `Unsupported typedef form for ${name}; use a scalar, struct or union alias.`,
       });
       continue;
     }
@@ -1261,7 +1405,7 @@ function expandTypedefAliases(source: string, diagnostics: AsmDiagnostic[]): { s
     if (!alias) return null;
     resolving.push(name);
     let target = alias.target.trim();
-    const taggedStruct = /^struct\s+([A-Za-z_]\w*)$/i.exec(target);
+    const taggedStruct = /^(?:struct|union)\s+([A-Za-z_]\w*)$/i.exec(target);
     if (!taggedStruct) {
       const tokens = target.match(/[A-Za-z_]\w*/g) ?? [];
       for (const token of tokens) {
@@ -1293,6 +1437,7 @@ function expandTypedefAliases(source: string, diagnostics: AsmDiagnostic[]): { s
   for (const name of rawAliases.keys()) resolveAlias(name);
   let expanded = chars.join("");
   for (const [name, target] of resolved) expanded = replaceTypedefIdentifier(expanded, name, target);
+  if (syntheticAggregates.length) expanded += `\n${syntheticAggregates.join("\n")}`;
   return { source: expanded, aliases: resolved };
 }
 
@@ -1347,7 +1492,7 @@ function canonicalizeTypedefTarget(text: string): string {
 
 function isSupportedTypedefTarget(target: string): boolean {
   const normalized = normalizeTypeText(target);
-  if (/^struct\s+[A-Za-z_]\w*$/i.test(normalized) || /^void$/i.test(normalized)) return true;
+  if (/^(?:struct|union)\s+[A-Za-z_]\w*$/i.test(normalized) || /^void$/i.test(normalized)) return true;
   const allowed = new Set([
     "_bool", "bool", "bit", "char", "short", "int", "long", "float", "double",
     "uint8_t", "int8_t", "uint16_t", "int16_t", "uint32_t", "int32_t",
@@ -1423,6 +1568,7 @@ function parseArrays(source: string, diagnostics: AsmDiagnostic[]): Map<string, 
     const name = m[2].toLowerCase();
     const initializer = m[4].trim();
     const values: number[] = [];
+    const byteValues: number[] = [];
     if (initializer.startsWith("\"")) {
       const decoded = decodeCString(initializer);
       for (const ch of decoded) values.push(ch.charCodeAt(0) & 0xff);
@@ -1430,7 +1576,19 @@ function parseArrays(source: string, diagnostics: AsmDiagnostic[]): Map<string, 
     } else {
       const body = initializer.slice(1, -1);
       for (const token of splitCsv(body)) {
-        const value = tryEvalConst(token);
+        if (type?.category === "floating" && elementSize === 4) {
+          const floatValue = tryEvalFloatConst(token);
+          if (floatValue == null) {
+            diagnostics.push({ level: "error", message: `Code array element could not be parsed as float: ${token.trim()}` });
+            continue;
+          }
+          const bytes = new Uint8Array(4);
+          new DataView(bytes.buffer).setFloat32(0, floatValue, true);
+          byteValues.push(...bytes);
+          values.push(0);
+          continue;
+        }
+        const value = elementSize >= 4 ? tryEvalConstWide(token) : tryEvalConst(token);
         if (value == null) {
           diagnostics.push({ level: "error", message: `Code array element could not be parsed: ${token.trim()}` });
           continue;
@@ -1445,7 +1603,7 @@ function parseArrays(source: string, diagnostics: AsmDiagnostic[]): Map<string, 
     }
     map.set(name, {
       name,
-      bytes: expandElementBytes(values, elementSize, values.length),
+      bytes: byteValues.length ? byteValues : expandElementBytes(values, elementSize, values.length),
       elementSize,
       elementCount: values.length,
     });
@@ -1485,6 +1643,7 @@ type ParsedDeclaration = {
   isConst: boolean;
   isCode: boolean;
   isSigned: boolean;
+  category: ScalarTypeInfo["category"];
   memorySpace: PointerKind | "data" | "idata" | "bdata";
   unsupportedReason?: string;
 };
@@ -1503,6 +1662,7 @@ function parseDeclarationText(raw: string): ParsedDeclaration | null {
     isConst: /\bconst\b/.test(header),
     isCode: /\bcode\b/.test(header),
     isSigned: type.signed,
+    category: type.category,
     memorySpace: memorySpaceFromHeader(header),
     unsupportedReason: type.unsupportedReason,
   };
@@ -1511,6 +1671,7 @@ function parseDeclarationText(raw: string): ParsedDeclaration | null {
 
 type ParsedStructDeclaration = {
   structName: string;
+  aggregateKind: "struct" | "union";
   header: string;
   declarators: string;
   isExtern: boolean;
@@ -1521,13 +1682,14 @@ type ParsedStructDeclaration = {
 function parseStructDeclarationText(raw: string): ParsedStructDeclaration | null {
   const text = raw.trim();
   if (/^typedef\b/i.test(text)) return null;
-  const match = /^((?:(?:const|static|volatile|extern|register|auto)\s+)*)struct\s+([A-Za-z_]\w*)\s+((?:(?:const|static|volatile|extern|register|auto|code|data|idata|xdata|pdata|bdata|far)\s+)*)([\s\S]+)$/i.exec(text);
-  if (!match || /^\{/.test(match[4].trim())) return null;
-  const header = `${match[1]} ${match[3]}`.trim().toLowerCase();
+  const match = /^((?:(?:const|static|volatile|extern|register|auto)\s+)*)(struct|union)\s+([A-Za-z_]\w*)\s+((?:(?:const|static|volatile|extern|register|auto|code|data|idata|xdata|pdata|bdata|far)\s+)*)([\s\S]+)$/i.exec(text);
+  if (!match || /^\{/.test(match[5].trim())) return null;
+  const header = `${match[1]} ${match[4]}`.trim().toLowerCase();
   return {
-    structName: match[2].toLowerCase(),
+    structName: match[3].toLowerCase(),
+    aggregateKind: match[2].toLowerCase() as "struct" | "union",
     header,
-    declarators: match[4].trim(),
+    declarators: match[5].trim(),
     isExtern: /\bextern\b/.test(header),
     isConst: /\bconst\b/.test(header),
     memorySpace: memorySpaceFromHeader(header),
@@ -1545,7 +1707,7 @@ function parseInitializerNode(raw: string): InitializerNode {
   return text;
 }
 
-function scalarInitializerBytes(raw: InitializerNode | undefined, size: number, diagnostics: AsmDiagnostic[], label: string): number[] | null {
+function scalarInitializerBytes(raw: InitializerNode | undefined, size: number, diagnostics: AsmDiagnostic[], label: string, category: ScalarTypeInfo["category"] = "integer"): number[] | null {
   if (raw == null) return Array.from({ length: size }, () => 0);
   if (Array.isArray(raw)) {
     diagnostics.push({ level: "error", message: `${label}: scalar field cannot use a nested aggregate initializer.` });
@@ -1555,7 +1717,17 @@ function scalarInitializerBytes(raw: InitializerNode | undefined, size: number, 
     diagnostics.push({ level: "error", message: `${label}: designated initializers are not implemented.` });
     return null;
   }
-  const value = tryEvalConst(raw);
+  if (category === "floating") {
+    const value = tryEvalFloatConst(raw);
+    if (value == null) {
+      diagnostics.push({ level: "error", message: `${label}: float initializers must contain constant numeric expressions.` });
+      return null;
+    }
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setFloat32(0, value, true);
+    return Array.from(bytes);
+  }
+  const value = size >= 4 ? tryEvalConstWide(raw) : tryEvalConst(raw);
   if (value == null) {
     diagnostics.push({ level: "error", message: `${label}: structure initializers must contain constant integer expressions.` });
     return null;
@@ -1580,6 +1752,28 @@ function flattenStructInitializer(
     return null;
   }
   const bytes = Array.from({ length: def.size }, () => 0);
+  if (def.kind === "union") {
+    // A union has one storage location.  C initializes the first member
+    // supplied in the initializer; the remaining bytes stay zero-filled.
+    const field = def.fields[0];
+    const fieldNode = node[0];
+    if (!field) return bytes;
+    if (field.structName) {
+      const nested = defs.get(field.structName);
+      if (!nested) {
+        diagnostics.push({ level: "error", message: `${label}: unknown union member type ${field.structName}.` });
+        return null;
+      }
+      const nestedBytes = flattenStructInitializer(fieldNode, nested, defs, diagnostics, `${label}.${field.name}`);
+      if (!nestedBytes) return null;
+      bytes.splice(0, nestedBytes.length, ...nestedBytes);
+      return bytes;
+    }
+    const scalar = scalarInitializerBytes(fieldNode, field.elementSize, diagnostics, `${label}.${field.name}`, field.category);
+    if (!scalar) return null;
+    bytes.splice(0, scalar.length, ...scalar);
+    return bytes;
+  }
   for (let fieldIndex = 0; fieldIndex < def.fields.length; fieldIndex++) {
     const field = def.fields[fieldIndex];
     const fieldNode = node[fieldIndex];
@@ -1612,7 +1806,7 @@ function flattenStructInitializer(
       continue;
     }
     if (field.elementCount === 1) {
-      const scalar = scalarInitializerBytes(fieldNode, field.elementSize, diagnostics, `${label}.${field.name}`);
+      const scalar = scalarInitializerBytes(fieldNode, field.elementSize, diagnostics, `${label}.${field.name}`, field.category);
       if (!scalar) return null;
       bytes.splice(field.offset, scalar.length, ...scalar);
       continue;
@@ -1627,7 +1821,7 @@ function flattenStructInitializer(
       return null;
     }
     for (let index = 0; index < field.elementCount; index++) {
-      const scalar = scalarInitializerBytes(list[index], field.elementSize, diagnostics, `${label}.${field.name}[${index}]`);
+      const scalar = scalarInitializerBytes(list[index], field.elementSize, diagnostics, `${label}.${field.name}[${index}]`, field.category);
       if (!scalar) return null;
       bytes.splice(field.offset + index * field.elementSize, scalar.length, ...scalar);
     }
@@ -1668,12 +1862,7 @@ function scalarTypeInfo(raw: string): ScalarTypeInfo | null {
   if (/\b(?:uint8_t|int8_t)\b/.test(header)) return { size: 1, signed: /\bint8_t\b/.test(header), category: "integer" };
   if (/\b(?:uint16_t|int16_t)\b/.test(header)) return { size: 2, signed: /\bint16_t\b/.test(header), category: "integer" };
   if (/\b(?:uint32_t|int32_t)\b/.test(header)) {
-    return {
-      size: 4,
-      signed: /\bint32_t\b/.test(header),
-      category: "integer",
-      unsupportedReason: "32-bit integer lowering is not implemented; use an 8- or 16-bit type.",
-    };
+    return { size: 4, signed: /\bint32_t\b/.test(header), category: "integer" };
   }
   if (/\b(?:_bool|bool|bit|char)\b/.test(header)) {
     return { size: 1, signed: /\bsigned\b/.test(header) && !/\bunsigned\b/.test(header), category: "integer" };
@@ -1681,20 +1870,16 @@ function scalarTypeInfo(raw: string): ScalarTypeInfo | null {
   if (/\bshort\b/.test(header)) return { size: 2, signed: !/\bunsigned\b/.test(header), category: "integer" };
   if (/\bint\b/.test(header)) return { size: 2, signed: /\bsigned\b/.test(header) && !/\bunsigned\b/.test(header), category: "integer" };
   if (/\blong\b/.test(header)) {
-    return {
-      size: 4,
-      signed: !/\bunsigned\b/.test(header),
-      category: "integer",
-      unsupportedReason: "32-bit long arithmetic is not implemented; use an 8- or 16-bit type.",
-    };
+    return { size: 4, signed: !/\bunsigned\b/.test(header), category: "integer" };
   }
-  if (/\b(?:float|double)\b/.test(header)) {
-    return {
-      size: /\bdouble\b/.test(header) ? 8 : 4,
-      signed: true,
-      category: "floating",
-      unsupportedReason: "Floating-point lowering is not implemented.",
-    };
+  if (/\bfloat\b/.test(header)) {
+    return { size: 4, signed: true, category: "floating" };
+  }
+  if (/\bdouble\b/.test(header)) {
+    // Keep the storage width compatible with the browser backend.  Runtime
+    // arithmetic for double is deliberately diagnosed below; ADuC841 labs
+    // use float (IEEE-754 single precision) rather than 64-bit double.
+    return { size: 8, signed: true, category: "floating", unsupportedReason: "64-bit double arithmetic is not implemented; use float." };
   }
   if (/\b(?:signed|unsigned)\b/.test(header)) {
     return { size: 2, signed: /\bsigned\b/.test(header) && !/\bunsigned\b/.test(header), category: "integer" };
@@ -1782,11 +1967,7 @@ function parseGlobalScalars(
 
   for (const statement of statements) {
     const raw = statement.trim().replace(/;+\s*$/, "");
-    if (!raw || /^(?:sbit|sfr|typedef|enum)\b/i.test(raw) || raw.includes("(") || /^struct\s+[A-Za-z_]\w*\s*\{/i.test(raw)) continue;
-    if (/^union\b/i.test(raw)) {
-      diagnostics.push({ level: "error", message: "union objects are not implemented by the browser C51 backend." });
-      continue;
-    }
+    if (!raw || /^(?:sbit|sfr|typedef|enum)\b/i.test(raw) || raw.includes("(") || /^(?:struct|union)\s+[A-Za-z_]\w*\s*\{/i.test(raw)) continue;
 
     const structDeclaration = parseStructDeclarationText(raw);
     if (structDeclaration) {
@@ -1855,7 +2036,7 @@ function parseGlobalScalars(
       continue;
     }
 
-    if (/^struct\b/i.test(raw)) continue;
+    if (/^(?:struct|union)\b/i.test(raw)) continue;
     const declaration = parseDeclarationText(raw);
     if (!declaration || declaration.isExtern) continue;
     if (declaration.unsupportedReason) {
@@ -1891,15 +2072,32 @@ function parseGlobalScalars(
         const name = array[1].toLowerCase();
         let length = tryEvalConst(array[2]) ?? 0;
         const initialValues: number[] = [];
+        const initialBytes: number[] = [];
+        const isFloatArray = declaration.category === "floating" && declaration.size === 4;
         if (array[3]?.trim().startsWith('"')) {
           for (const ch of decodeCString(array[3])) initialValues.push(ch.charCodeAt(0) & 0xff);
           initialValues.push(0);
         } else if (array[3]) {
-          for (const item of splitCsv(array[3].trim().slice(1, -1))) initialValues.push(tryEvalConst(item) ?? 0);
+          for (const item of splitCsv(array[3].trim().slice(1, -1))) {
+            if (isFloatArray) {
+              const floatValue = tryEvalFloatConst(item);
+              if (floatValue == null) {
+                diagnostics.push({ level: "error", message: `Float array element could not be parsed: ${item.trim()}` });
+                continue;
+              }
+              const bytes = new Uint8Array(4);
+              new DataView(bytes.buffer).setFloat32(0, floatValue, true);
+              initialBytes.push(...bytes);
+            } else {
+              initialValues.push((declaration.size >= 4 ? tryEvalConstWide(item) : tryEvalConst(item)) ?? 0);
+            }
+          }
         }
-        if (!length) length = Math.max(1, initialValues.length);
+        const initializerCount = isFloatArray ? Math.floor(initialBytes.length / 4) : initialValues.length;
+        if (!length) length = Math.max(1, initializerCount);
         const total = Math.max(1, length * declaration.size);
-        const bytes = expandElementBytes(initialValues, declaration.size, length);
+        if (isFloatArray) while (initialBytes.length < total) initialBytes.push(0);
+        const bytes = isFloatArray ? initialBytes.slice(0, total) : expandElementBytes(initialValues, declaration.size, length);
         if (declaration.memorySpace === "xdata") {
           const baseAddr = allocateGlobalXdataBlock(nextXdataAddr, total, diagnostics, `Global XDATA array ${name}`);
           xdataArrays.set(name, { name, baseAddr, length: total, elementSize: declaration.size, elementCount: length });
@@ -1921,23 +2119,28 @@ function parseGlobalScalars(
         continue;
       }
       const name = scalar[1].toLowerCase();
-      const unsupportedInitializer = scalar[2] ? unsupportedArithmeticLiteral(scalar[2]) : null;
+      const type = scalarTypeInfo(declaration.header);
+      const isFloat = type?.category === "floating" && declaration.size === 4;
+      const floatValue = scalar[2] && isFloat ? tryEvalFloatConst(scalar[2]) : null;
+      const unsupportedInitializer = scalar[2] && !isFloat ? unsupportedArithmeticLiteral(scalar[2]) : null;
       if (unsupportedInitializer) diagnostics.push({ level: "error", message: `${name}: ${unsupportedInitializer}` });
-      const value = scalar[2] ? tryEvalConst(scalar[2]) : 0;
-      if (scalar[2] && value == null) diagnostics.push({ level: "error", message: `Global initializer for ${name} must be a constant expression.` });
+      const value = scalar[2] && !isFloat ? (declaration.size >= 4 ? tryEvalConstWide(scalar[2]) : tryEvalConst(scalar[2])) : null;
+      if (scalar[2] && ((isFloat && floatValue == null) || (!isFloat && value == null))) diagnostics.push({ level: "error", message: `Global initializer for ${name} must be a constant expression.` });
       const numeric = value ?? 0;
+      const floatBytes = isFloat && floatValue != null ? (() => { const bytes = new Uint8Array(4); new DataView(bytes.buffer).setFloat32(0, floatValue, true); return Array.from(bytes); })() : null;
       if (declaration.memorySpace === "xdata") {
         const addr = allocateGlobalXdataBlock(nextXdataAddr, declaration.size, diagnostics, `Global XDATA variable ${name}`);
-        const variable: XdataVar = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned };
+        const variable: XdataVar = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned, category: scalarTypeInfo(declaration.header)?.category };
         xdataVars.set(name, variable);
-        initCode.push(...emitXdataConstantBytes(addr, Array.from({ length: declaration.size }, (_, i) => (numeric >> (8 * i)) & 0xff)));
+        initCode.push(...emitXdataConstantBytes(addr, floatBytes ?? Array.from({ length: declaration.size }, (_, i) => (numeric >>> (8 * i)) & 0xff)));
       } else {
         const addr = nextVarAddr.value;
         nextVarAddr.value += declaration.size;
         if (nextVarAddr.value > 0x80) diagnostics.push({ level: "error", message: `Global variable ${name} exceeds internal RAM 0x30..0x7F.` });
-        const variable: ScalarVar = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned };
+        const variable: ScalarVar = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned, category: scalarTypeInfo(declaration.header)?.category };
         vars.set(name, variable);
-        for (let i = 0; i < declaration.size; i++) initCode.push(`mov ${toAsmByte(addr + i)},#${toAsmByte8(numeric >> (8 * i))}`);
+        const bytes = floatBytes ?? Array.from({ length: declaration.size }, (_, i) => (numeric >>> (8 * i)) & 0xff);
+        for (let i = 0; i < declaration.size; i++) initCode.push(`mov ${toAsmByte(addr + i)},#${toAsmByte8(bytes[i] ?? 0)}`);
       }
     }
   }
@@ -2038,29 +2241,27 @@ function extractTopLevelSemicolonStatements(source: string): string[] {
 }
 
 function parseStructDefs(source: string, diagnostics: AsmDiagnostic[]): Map<string, StructDef> {
-  const rawDefs = new Map<string, string>();
-  const re = /struct\s+([A-Za-z_]\w*)\s*\{([\s\S]*?)\}\s*;/gi;
+  const rawDefs = new Map<string, { body: string; kind: "struct" | "union" }>();
+  const re = /\b(struct|union)\s+([A-Za-z_]\w*)\s*\{([\s\S]*?)\}\s*;/gi;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(source))) rawDefs.set(match[1].toLowerCase(), match[2]);
+  while ((match = re.exec(source))) rawDefs.set(match[2].toLowerCase(), { body: match[3], kind: match[1].toLowerCase() as "struct" | "union" });
 
   const defs = new Map<string, StructDef>();
   const unresolved = new Set(rawDefs.keys());
   for (let pass = 0; pass <= rawDefs.size && unresolved.size; pass++) {
     let progressed = false;
     for (const name of [...unresolved]) {
-      const body = rawDefs.get(name) ?? "";
+      const rawDef = rawDefs.get(name);
+      const body = rawDef?.body ?? "";
+      const isUnion = rawDef?.kind === "union";
       const fields: StructField[] = [];
       let offset = 0;
+      let maxFieldSize = 0;
       let blocked = false;
       let invalid = false;
       for (const part of splitStatements(body)) {
         const line = part.text.trim().replace(/;+\s*$/, "");
         if (!line) continue;
-        if (/^union\b/i.test(line)) {
-          diagnostics.push({ level: "error", message: `union field in struct ${name} is not implemented.` });
-          invalid = true;
-          break;
-        }
         const nested = parseStructDeclarationText(line);
         if (nested) {
           const nestedDef = defs.get(nested.structName);
@@ -2096,14 +2297,16 @@ function parseStructDefs(source: string, diagnostics: AsmDiagnostic[]): Map<stri
             const size = nestedDef.size * count;
             fields.push({
               name: fieldName,
-              offset,
+              offset: isUnion ? 0 : offset,
               size,
               elementSize: nestedDef.size,
               elementCount: count,
               signed: false,
+              category: "integer",
               structName: nested.structName,
             });
-            offset += size;
+            if (isUnion) maxFieldSize = Math.max(maxFieldSize, size);
+            else offset += size;
           }
           if (invalid) break;
           continue;
@@ -2150,20 +2353,22 @@ function parseStructDefs(source: string, diagnostics: AsmDiagnostic[]): Map<stri
           const size = elementSize * count;
           fields.push({
             name: fieldName,
-            offset,
+            offset: isUnion ? 0 : offset,
             size,
             elementSize,
             elementCount: count,
             signed: fieldDeclaration.isSigned,
+            category: scalarTypeInfo(fieldDeclaration.header)?.category,
           });
-          offset += size;
+          if (isUnion) maxFieldSize = Math.max(maxFieldSize, size);
+          else offset += size;
         }
         if (invalid) break;
       }
       if (blocked) continue;
       unresolved.delete(name);
       progressed = true;
-      if (!invalid) defs.set(name, { name, fields, size: offset });
+      if (!invalid) defs.set(name, { name, fields, size: isUnion ? maxFieldSize : offset, kind: isUnion ? "union" : "struct" });
     }
     if (!progressed) break;
   }
@@ -2173,7 +2378,7 @@ function parseStructDefs(source: string, diagnostics: AsmDiagnostic[]): Map<stri
 
 function extractFunctions(source: string, diagnostics: AsmDiagnostic[]): Map<string, FunctionInfo> {
   const functions = new Map<string, FunctionInfo>();
-  const functionHeader = `((?:(?:${C_TYPE_QUALIFIER_SOURCE})\\s+)*(?:void|${C_SCALAR_TYPE_SOURCE}|struct\\s+[A-Za-z_]\\w*)(?:(?:\\s+${C_MEMORY_QUALIFIER_SOURCE}))*)`;
+  const functionHeader = `((?:(?:${C_TYPE_QUALIFIER_SOURCE})\\s+)*(?:void|${C_SCALAR_TYPE_SOURCE}|(?:struct|union)\\s+[A-Za-z_]\\w*)(?:(?:\\s+${C_MEMORY_QUALIFIER_SOURCE}))*)`;
   const re = new RegExp(
     `${functionHeader}\\s+([A-Za-z_]\\w*)\\s*\\(([^)]*)\\)\\s*(?:interrupt\\s+(\\d+))?\\s*(?:using\\s+(\\d+))?\\s*\\{`,
     "gi",
@@ -2196,7 +2401,7 @@ function extractFunctions(source: string, diagnostics: AsmDiagnostic[]): Map<str
     const declarationLine = source.slice(0, match.index ?? 0).split("\n").length;
     if (returnType?.unsupportedReason) {
       diagnostics.push({ level: "error", line: declarationLine, message: `${name}(): ${returnType.unsupportedReason}` });
-    } else if (/\bstruct\b/i.test(returnHeader)) {
+    } else if (/\b(?:struct|union)\b/i.test(returnHeader)) {
       diagnostics.push({ level: "error", line: declarationLine, message: `Returning a struct by value from ${name}() is not implemented.` });
     }
     const returnSize = /\bvoid\b/.test(returnHeader) ? 0 : returnType?.size ?? 2;
@@ -2207,6 +2412,8 @@ function extractFunctions(source: string, diagnostics: AsmDiagnostic[]): Map<str
       order: order++,
       params: parseParamList(match[3], diagnostics, declarationLine),
       returnSize,
+      returnCategory: returnType?.category,
+      returnSigned: returnType?.signed,
       interruptNumber: match[4] == null ? undefined : Number(match[4]),
       usingBank: match[5] == null ? undefined : Number(match[5]),
       rangeStart: match.index ?? 0,
@@ -2240,9 +2447,602 @@ function splitStatements(source: string): ParsedStatement[] {
   return list;
 }
 
-function emitVariableIncDec(variable: ScalarVar, op: string, ctx: TranspileContext): string[] {
+function copyScalarBytes(source: ScalarVar, target: ScalarVar, count = target.size): string[] {
+  const out: string[] = [];
+  const bytes = Math.min(count, source.size, target.size);
+  for (let index = 0; index < bytes; index++) out.push(`mov a,${variableTarget(source, index)}`, `mov ${variableTarget(target, index)},a`);
+  return out;
+}
+
+function emitLongConstant(target: ScalarVar, value: number): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < 4; index++) out.push(`mov ${variableTarget(target, index)},#${toAsmByte8(value >>> (index * 8))}`);
+  return out;
+}
+
+function emitLongAddSub(target: ScalarVar, left: ScalarVar, right: ScalarVar, subtract: boolean): string[] {
+  const out: string[] = [`mov a,${variableTarget(left)}`, subtract ? `clr c` : `add a,${variableTarget(right)}`];
+  if (subtract) out.push(`subb a,${variableTarget(right)}`);
+  out.push(`mov ${variableTarget(target)},a`);
+  for (let index = 1; index < 4; index++) {
+    out.push(`mov a,${variableTarget(left, index)}`, subtract ? `subb a,${variableTarget(right, index)}` : `addc a,${variableTarget(right, index)}`, `mov ${variableTarget(target, index)},a`);
+  }
+  return out;
+}
+
+function emitLongBitwise(target: ScalarVar, left: ScalarVar, right: ScalarVar, op: string): string[] {
+  const opcode = op === "&" ? "anl" : op === "|" ? "orl" : "xrl";
+  const out: string[] = [];
+  for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(left, index)}`, `${opcode} a,${variableTarget(right, index)}`, `mov ${variableTarget(target, index)},a`);
+  return out;
+}
+
+function emitLongShift(target: ScalarVar, value: ScalarVar, amount: number, left: boolean): string[] {
+  const out: string[] = copyScalarBytes(value, target, 4);
+  const count = Math.max(0, Math.min(32, amount));
+  for (let step = 0; step < count; step++) out.push(...emitLongShiftOnce(target, left));
+  return out;
+}
+
+function emitLongShiftOnce(target: ScalarVar, left: boolean): string[] {
+  const out = ["clr c"];
+  if (left) {
+    for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(target, index)}`, "rlc a", `mov ${variableTarget(target, index)},a`);
+  } else {
+    for (let index = 3; index >= 0; index--) out.push(`mov a,${variableTarget(target, index)}`, "rrc a", `mov ${variableTarget(target, index)},a`);
+  }
+  return out;
+}
+
+function emitLongVariableShift(target: ScalarVar, value: ScalarVar, amountExpr: string, left: boolean, ctx: TranspileContext, line: number): string[] {
+  const counter = ensureVar(ctx, `__long_shift_count_${ctx.labelCounter.value++}`, line);
+  const loop = nextLabel(ctx, "long_shift_loop");
+  const lessThan32 = nextLabel(ctx, "long_shift_lt32");
+  const zero = nextLabel(ctx, "long_shift_zero");
+  const done = nextLabel(ctx, "long_shift_done");
+  const out: string[] = [
+    ...emitExprToA(amountExpr, ctx, line),
+    `mov ${variableTarget(counter)},a`,
+    `mov a,${variableTarget(counter)}`,
+    `cjne a,#0x20,${lessThan32}`,
+    `sjmp ${zero}`,
+    `${lessThan32}:`,
+    // CJNE leaves carry set only when the count is below 32.
+    `jc ${loop}`,
+    `sjmp ${zero}`,
+    `${loop}:`,
+    `mov a,${variableTarget(counter)}`,
+    `jz ${done}`,
+    ...emitLongShiftOnce(target, left),
+    `dec ${variableTarget(counter)}`,
+    `sjmp ${loop}`,
+    `${zero}:`,
+    ...emitLongConstant(target, 0),
+    `${done}:`,
+  ];
+  return out;
+}
+
+function emitLongNegateInPlace(value: ScalarVar): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(value, index)}`, "cpl a", `mov ${variableTarget(value, index)},a`);
+  out.push("mov a,#0x1", `add a,${variableTarget(value)}`, `mov ${variableTarget(value)},a`);
+  for (let index = 1; index < 4; index++) out.push(`mov a,${variableTarget(value, index)}`, "addc a,#0x0", `mov ${variableTarget(value, index)},a`);
+  return out;
+}
+
+/** Emit restoring 32-bit division, with optional signed two's-complement semantics. */
+function emitLongDivMod(target: ScalarVar, dividend: ScalarVar, divisor: ScalarVar, remainderMode: boolean, signedOperation: boolean, ctx: TranspileContext, line: number): string[] {
+  const remainder = ensureVar(ctx, `__long_div_remainder_${ctx.labelCounter.value++}`, line, 4);
+  const candidate = ensureVar(ctx, `__long_div_candidate_${ctx.labelCounter.value++}`, line, 4);
+  const counter = ensureVar(ctx, `__long_div_count_${ctx.labelCounter.value++}`, line);
+  const dividendNegative = ensureVar(ctx, `__long_dividend_negative_${ctx.labelCounter.value++}`, line);
+  const divisorNegative = ensureVar(ctx, `__long_divisor_negative_${ctx.labelCounter.value++}`, line);
+  const loop = nextLabel(ctx, "long_div_loop");
+  const noSubtract = nextLabel(ctx, "long_div_no_subtract");
+  const done = nextLabel(ctx, "long_div_done");
+  const out: string[] = [];
+  if (signedOperation) {
+    const dividendPositive = nextLabel(ctx, "long_dividend_positive");
+    const dividendSignDone = nextLabel(ctx, "long_dividend_sign_done");
+    const divisorPositive = nextLabel(ctx, "long_divisor_positive");
+    const divisorSignDone = nextLabel(ctx, "long_divisor_sign_done");
+    out.push(
+      `mov a,${variableTarget(dividend, 3)}`, "anl a,#0x80", `jz ${dividendPositive}`,
+      `mov ${variableTarget(dividendNegative)},#0x1`, ...emitLongNegateInPlace(dividend), `sjmp ${dividendSignDone}`,
+      `${dividendPositive}:`, `mov ${variableTarget(dividendNegative)},#0x0`, `${dividendSignDone}:`,
+      `mov a,${variableTarget(divisor, 3)}`, "anl a,#0x80", `jz ${divisorPositive}`,
+      `mov ${variableTarget(divisorNegative)},#0x1`, ...emitLongNegateInPlace(divisor), `sjmp ${divisorSignDone}`,
+      `${divisorPositive}:`, `mov ${variableTarget(divisorNegative)},#0x0`, `${divisorSignDone}:`,
+    );
+  }
+  out.push(...emitLongConstant(target, 0), ...emitLongConstant(remainder, 0), `mov ${variableTarget(counter)},#0x20`, `${loop}:`, "clr c");
+  for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(dividend, index)}`, "rlc a", `mov ${variableTarget(dividend, index)},a`);
+  // Shift the partial remainder left and bring in the dividend bit.
+  for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(remainder, index)}`, "rlc a", `mov ${variableTarget(remainder, index)},a`);
+  // Shift quotient left before selecting its next low bit.
+  out.push("clr c");
+  for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(target, index)}`, "rlc a", `mov ${variableTarget(target, index)},a`);
+  // Compute remainder - divisor into a scratch value; final borrow tells us
+  // whether the divisor fits without destroying the original remainder.
+  out.push(`mov a,${variableTarget(remainder)}`, "clr c", `subb a,${variableTarget(divisor)}`, `mov ${variableTarget(candidate)},a`);
+  for (let index = 1; index < 4; index++) out.push(`mov a,${variableTarget(remainder, index)}`, `subb a,${variableTarget(divisor, index)}`, `mov ${variableTarget(candidate, index)},a`);
+  out.push(`jc ${noSubtract}`);
+  for (let index = 0; index < 4; index++) out.push(`mov a,${variableTarget(candidate, index)}`, `mov ${variableTarget(remainder, index)},a`);
+  out.push(`mov a,${variableTarget(target)}`, "orl a,#0x1", `mov ${variableTarget(target)},a`, `${noSubtract}:`);
+  out.push(`djnz ${variableTarget(counter)},${loop}`, `${done}:`);
+  if (signedOperation) {
+    const quotientSignDone = nextLabel(ctx, "long_quotient_sign_done");
+    const remainderSignDone = nextLabel(ctx, "long_remainder_sign_done");
+    if (remainderMode) {
+      out.push(`mov a,${variableTarget(dividendNegative)}`, `jz ${remainderSignDone}`, ...emitLongNegateInPlace(remainder), `${remainderSignDone}:`, ...copyScalarBytes(remainder, target, 4));
+    } else {
+      out.push(`mov a,${variableTarget(dividendNegative)}`, `xrl a,${variableTarget(divisorNegative)}`, `jz ${quotientSignDone}`, ...emitLongNegateInPlace(target), `${quotientSignDone}:`);
+    }
+  } else if (remainderMode) out.push(...copyScalarBytes(remainder, target, 4));
+  return out;
+}
+
+function isLongExpression(expression: string, ctx: TranspileContext): boolean {
+  const text = trimOuter(expression.trim());
+  if (/(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+)[lL](?:[uU])?$/.test(text) || /\b(?:uint32_t|int32_t)\b/i.test(text)) return true;
+  const variable = resolveVariable(text.toLowerCase(), ctx) ?? resolveXdataVariable(text.toLowerCase(), ctx);
+  if (variable?.category === "floating") return false;
+  if ((variable?.size ?? 0) >= 4) return true;
+  const call = /^([A-Za-z_]\w*)\s*\(/.exec(text);
+  return call ? (ctx.functions.get(call[1].toLowerCase())?.returnSize ?? 0) >= 4 : false;
+}
+
+function isSignedLongExpression(expression: string, ctx: TranspileContext): boolean {
+  const text = trimOuter(expression.trim());
+  const cast = peelLeadingScalarCasts(text);
+  if (cast.type && cast.type.category === "integer") {
+    return cast.type.size >= 4 ? cast.type.signed : true;
+  }
+  const variable = resolveVariable(text.toLowerCase(), ctx) ?? resolveXdataVariable(text.toLowerCase(), ctx);
+  if (variable) return variable.size >= 4 ? variable.signed !== false : true;
+  const call = /^([A-Za-z_]\w*)\s*\(/.exec(text);
+  if (call) {
+    const fn = ctx.functions.get(call[1].toLowerCase());
+    if (fn?.returnSize && fn.returnSize >= 4) return fn.returnSigned !== false;
+  }
+  if (/\b(?:uint32_t|unsigned\s+long)\b/i.test(text) || /(?:[uUlL]{2}|[uU][lL]|[lL][uU])$/.test(text)) return false;
+  return true;
+}
+
+function referencesLongValue(expression: string, ctx: TranspileContext): boolean {
+  if (isLongExpression(expression, ctx)) return true;
+  for (const token of expression.match(/[A-Za-z_]\w*/g) ?? []) {
+    const variable = resolveVariable(token.toLowerCase(), ctx) ?? resolveXdataVariable(token.toLowerCase(), ctx);
+    if (variable?.category !== "floating" && (variable?.size ?? 0) >= 4) return true;
+    if ((ctx.functions.get(token.toLowerCase())?.returnSize ?? 0) >= 4) return true;
+  }
+  return false;
+}
+
+function emitExprToLong(expr: string, ctx: TranspileContext, line: number): string[] {
+  const result = ensureVar(ctx, "__long_result", line, 4);
+  const trimmed = trimOuter(expr.trim());
+  const constant = tryEvalConstWide(trimmed);
+  if (constant != null) return emitLongConstant(result, constant);
+
+  const xdataSource = resolveXdataVariable(trimmed.toLowerCase(), ctx);
+  const source = resolveVariable(trimmed.toLowerCase(), ctx) ?? xdataSource;
+  if (source) {
+    if (source.category === "floating") {
+      ctx.diagnostics.push({ level: "error", line, message: `Cannot use float ${trimmed} as an integer long expression.` });
+      return emitLongConstant(result, 0);
+    }
+    if (xdataSource) {
+      return emitLoadBytesToTargetFromXdata(xdataSource.addr, result, 4);
+    }
+    const out = copyScalarBytes(source, result, Math.min(4, source.size));
+    if (source.size < 4) {
+      const fill = source.signed ? nextLabel(ctx, "long_sign_fill") : nextLabel(ctx, "long_zero_fill");
+      const done = nextLabel(ctx, "long_fill_done");
+      out.push(`mov a,${variableTarget(source)}`);
+      if (source.signed) out.push(`jnb acc.7,${fill}`, ...Array.from({ length: 4 - source.size }, (_, index) => `mov ${variableTarget(result, source.size + index)},#0xff`), `sjmp ${done}`, `${fill}:`);
+      out.push(...Array.from({ length: 4 - source.size }, (_, index) => `mov ${variableTarget(result, source.size + index)},#0x0`), `${done}:`);
+    }
+    return out;
+  }
+
+  const call = /^([A-Za-z_]\w*)\s*\(([\s\S]*)\)$/.exec(trimmed);
+  if (call && ctx.functions.has(call[1].toLowerCase())) {
+    const fn = ctx.functions.get(call[1].toLowerCase())!;
+    const out = emitFunctionCall(fn.name, call[2], ctx, line);
+    const slot = ctx.returnSlots.get(fn.name);
+    if (slot) out.push(...copyScalarBytes(slot, result, 4));
+    return out;
+  }
+
+  const unaryMinus = /^-\s*([\s\S]+)$/.exec(trimmed);
+  if (unaryMinus) {
+    const out = emitExprToLong(unaryMinus[1], ctx, line);
+    return [...out, ...emitLongNegateInPlace(result)];
+  }
+
+  const shift = findTopLevelBinaryOperator(trimmed, ["<<", ">>"]);
+  if (shift) {
+    const value = ensureVar(ctx, `__long_shift_value_${ctx.labelCounter.value++}`, line, 4);
+    const code = [...emitExprToLong(shift.left, ctx, line), ...copyScalarBytes(result, value, 4)];
+    const amount = tryEvalConstWide(shift.right);
+    if (amount == null) return [...code, ...emitLongVariableShift(result, value, shift.right, shift.op === "<<", ctx, line)];
+    return [...code, ...emitLongShift(result, value, amount, shift.op === "<<")];
+  }
+
+  for (const ops of [["|"], ["^"], ["&"], ["+", "-"], ["/", "%"], ["*"]]) {
+    const found = findTopLevelBinaryOperator(trimmed, ops);
+    if (!found) continue;
+    const left = ensureVar(ctx, `__long_lhs_${ctx.labelCounter.value++}`, line, 4);
+    const right = ensureVar(ctx, `__long_rhs_${ctx.labelCounter.value++}`, line, 4);
+    const code = [...emitExprToLong(found.left, ctx, line), ...copyScalarBytes(result, left, 4), ...emitExprToLong(found.right, ctx, line), ...copyScalarBytes(result, right, 4)];
+    if (found.op === "+" || found.op === "-") return [...code, ...emitLongAddSub(result, left, right, found.op === "-")];
+    if (found.op === "|" || found.op === "&" || found.op === "^") return [...code, ...emitLongBitwise(result, left, right, found.op)];
+    if (found.op === "/" || found.op === "%") {
+      const divisorConstant = tryEvalConstWide(found.right);
+      if (divisorConstant === 0) {
+        ctx.diagnostics.push({ level: "error", line, message: "Division by zero is not valid for a 32-bit long expression." });
+        return [...code, ...emitLongConstant(result, 0)];
+      }
+      const signedOperation = isSignedLongExpression(found.left, ctx) && isSignedLongExpression(found.right, ctx);
+      return [...code, ...emitLongDivMod(result, left, right, found.op === "%", signedOperation, ctx, line)];
+    }
+    // Shift-and-add multiplication keeps the implementation self-contained
+    // and works for the full unsigned 32-bit range (two's-complement values
+    // retain the expected low 32 bits).
+    const counter = ensureVar(ctx, `__long_mul_count_${ctx.labelCounter.value++}`, line);
+    const loop = nextLabel(ctx, "long_mul_loop");
+    const skip = nextLabel(ctx, "long_mul_skip");
+    const done = nextLabel(ctx, "long_mul_done");
+    const out = [...code, ...emitLongConstant(result, 0), `mov ${variableTarget(counter)},#0x20`, `${loop}:`, `mov a,${variableTarget(right)}`, "anl a,#0x1", `jz ${skip}`, ...emitLongAddSub(result, result, left, false), `${skip}:`, ...emitLongShift(left, left, 1, true), ...emitLongShift(right, right, 1, false), `djnz ${variableTarget(counter)},${loop}`, `${done}:`];
+    return out;
+  }
+
+  ctx.diagnostics.push({ level: "error", line, message: `Unsupported 32-bit long expression: ${trimmed}` });
+  return emitLongConstant(result, 0);
+}
+
+function isFloatExpression(expression: string, ctx: TranspileContext): boolean {
+  const text = trimOuter(expression.trim());
+  if (/(?:\.\d|\d[eE][+\-]?\d)[fF]?\b/.test(text) || /\bfloat\b/i.test(text)) return true;
+  const variable = resolveVariable(text.toLowerCase(), ctx) ?? resolveXdataVariable(text.toLowerCase(), ctx);
+  if (variable?.category === "floating") return true;
+  const call = /^([A-Za-z_]\w*)\s*\(/.exec(text);
+  return call ? ctx.functions.get(call[1].toLowerCase())?.returnCategory === "floating" : false;
+}
+
+function emitFloatConstant(target: ScalarVar, value: number): string[] {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setFloat32(0, value, true);
+  return Array.from(bytes, (byte, index) => `mov ${variableTarget(target, index)},#${toAsmByte8(byte)}`);
+}
+
+function tryEvalFloatConst(raw: string): number | null {
+  let expression = trimOuter(raw.trim());
+  expression = expression.replace(/\b(0[xX][0-9a-fA-F]+|\d+(?:\.\d*)?|\.\d+)(?:[fF])\b/g, "$1");
+  expression = expression.replace(/\b(0[xX][0-9a-fA-F]+|\d+)(?:[uUlL]+)\b/g, "$1");
+  if (!/^[0-9a-fxX\s().,+\-*/%<>?:&|^!~]+$/.test(expression)) return null;
+  try {
+    const value = Function(`"use strict"; return ((${expression}));`)();
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+type FloatParts = {
+  sign: ScalarVar;
+  exponent: ScalarVar;
+  mantissa: ScalarVar;
+};
+
+function allocateFloatParts(ctx: TranspileContext, prefix: string, line: number): FloatParts {
+  const depth = ctx.floatScratchDepth;
+  return {
+    sign: ensureVar(ctx, `__${prefix}_sign_${depth}`, line),
+    exponent: ensureVar(ctx, `__${prefix}_exp_${depth}`, line),
+    mantissa: ensureVar(ctx, `__${prefix}_mant_${depth}`, line, 3),
+  };
+}
+
+function emitFloatUnpack(source: ScalarVar, parts: FloatParts, ctx: TranspileContext): string[] {
+  const signSet = nextLabel(ctx, "float_sign_set");
+  const signDone = nextLabel(ctx, "float_sign_done");
+  const expLowSet = nextLabel(ctx, "float_exp_low_set");
+  const expDone = nextLabel(ctx, "float_exp_done");
+  const noHidden = nextLabel(ctx, "float_no_hidden");
+  return [
+    `mov a,${variableTarget(source, 3)}`,
+    "anl a,#0x80",
+    `jnz ${signSet}`,
+    `mov ${variableTarget(parts.sign)},#0x0`,
+    `sjmp ${signDone}`,
+    `${signSet}:`,
+    `mov ${variableTarget(parts.sign)},#0x1`,
+    `${signDone}:`,
+    `mov a,${variableTarget(source, 3)}`,
+    "anl a,#0x7f",
+    "rl a",
+    `mov ${variableTarget(parts.exponent)},a`,
+    `mov a,${variableTarget(source, 2)}`,
+    "anl a,#0x80",
+    `jz ${expLowSet}`,
+    `inc ${variableTarget(parts.exponent)}`,
+    `${expLowSet}:`,
+    `mov a,${variableTarget(source, 0)}`,
+    `mov ${variableTarget(parts.mantissa, 0)},a`,
+    `mov a,${variableTarget(source, 1)}`,
+    `mov ${variableTarget(parts.mantissa, 1)},a`,
+    `mov a,${variableTarget(source, 2)}`,
+    "anl a,#0x7f",
+    `mov ${variableTarget(parts.mantissa, 2)},a`,
+    `mov a,${variableTarget(parts.exponent)}`,
+    `jz ${noHidden}`,
+    `orl ${variableTarget(parts.mantissa, 2)},#0x80`,
+    `${noHidden}:`,
+    `${expDone}:`,
+  ];
+}
+
+function emitFloatShiftRight(parts: FloatParts, count: ScalarVar, ctx: TranspileContext, line: number): string[] {
+  const counter = ensureVar(ctx, `__float_shift_count_${ctx.floatScratchDepth}`, line);
+  const loop = nextLabel(ctx, "float_shift_right_loop");
+  const done = nextLabel(ctx, "float_shift_right_done");
+  return [
+    `mov a,${variableTarget(count)}`,
+    `mov ${variableTarget(counter)},a`,
+    `${loop}:`,
+    `mov a,${variableTarget(counter)}`,
+    `jz ${done}`,
+    "clr c",
+    `mov a,${variableTarget(parts.mantissa, 2)}`,
+    "rrc a",
+    `mov ${variableTarget(parts.mantissa, 2)},a`,
+    `mov a,${variableTarget(parts.mantissa, 1)}`,
+    "rrc a",
+    `mov ${variableTarget(parts.mantissa, 1)},a`,
+    `mov a,${variableTarget(parts.mantissa, 0)}`,
+    "rrc a",
+    `mov ${variableTarget(parts.mantissa, 0)},a`,
+    `dec ${variableTarget(counter)}`,
+    `sjmp ${loop}`,
+    `${done}:`,
+  ];
+}
+
+function emitFloatShiftLeftOnce(mantissa: ScalarVar): string[] {
+  return [
+    "clr c",
+    `mov a,${variableTarget(mantissa, 0)}`,
+    "rlc a",
+    `mov ${variableTarget(mantissa, 0)},a`,
+    `mov a,${variableTarget(mantissa, 1)}`,
+    "rlc a",
+    `mov ${variableTarget(mantissa, 1)},a`,
+    `mov a,${variableTarget(mantissa, 2)}`,
+    "rlc a",
+    `mov ${variableTarget(mantissa, 2)},a`,
+  ];
+}
+
+function emitFloatNormalizeMantissa(mantissa: ScalarVar, exponent: ScalarVar, ctx: TranspileContext): string[] {
+  const loop = nextLabel(ctx, "float_normalize_loop");
+  const shift = nextLabel(ctx, "float_normalize_shift");
+  const done = nextLabel(ctx, "float_normalize_done");
+  return [
+    `${loop}:`,
+    `mov a,${variableTarget(mantissa, 2)}`,
+    `jnb acc.7,${shift}`,
+    `ljmp ${done}`,
+    `${shift}:`,
+    ...emitFloatShiftLeftOnce(mantissa),
+    `dec ${variableTarget(exponent)}`,
+    `ljmp ${loop}`,
+    `${done}:`,
+  ];
+}
+
+function emitFloatPack(target: ScalarVar, sign: ScalarVar, exponent: ScalarVar, mantissa: ScalarVar, ctx: TranspileContext): string[] {
+  const expOdd = nextLabel(ctx, "float_pack_exp_odd");
+  const expDone = nextLabel(ctx, "float_pack_exp_done");
+  const signDone = nextLabel(ctx, "float_pack_sign_done");
+  return [
+    `mov a,${variableTarget(mantissa, 0)}`,
+    `mov ${variableTarget(target, 0)},a`,
+    `mov a,${variableTarget(mantissa, 1)}`,
+    `mov ${variableTarget(target, 1)},a`,
+    `mov a,${variableTarget(mantissa, 2)}`,
+    "anl a,#0x7f",
+    `mov ${variableTarget(target, 2)},a`,
+    `mov a,${variableTarget(exponent)}`,
+    "anl a,#0x1",
+    `jnz ${expOdd}`,
+    `sjmp ${expDone}`,
+    `${expOdd}:`,
+    `mov a,${variableTarget(target, 2)}`,
+    "orl a,#0x80",
+    `mov ${variableTarget(target, 2)},a`,
+    `${expDone}:`,
+    `mov a,${variableTarget(exponent)}`,
+    "clr c",
+    "rrc a",
+    "anl a,#0x7f",
+    `mov ${variableTarget(target, 3)},a`,
+    `mov a,${variableTarget(sign)}`,
+    `jz ${signDone}`,
+    `mov a,${variableTarget(target, 3)}`,
+    "orl a,#0x80",
+    `mov ${variableTarget(target, 3)},a`,
+    `${signDone}:`,
+  ];
+}
+
+function emitFloatZero(target: ScalarVar): string[] {
+  return Array.from({ length: 4 }, (_, index) => `mov ${variableTarget(target, index)},#0x0`);
+}
+
+function emitFloatMantissaAdd(target: ScalarVar, right: ScalarVar): string[] {
+  const out: string[] = [`mov a,${variableTarget(target, 0)}`, "clr c", `add a,${variableTarget(right, 0)}`, `mov ${variableTarget(target, 0)},a`];
+  for (let index = 1; index < 3; index++) out.push(`mov a,${variableTarget(target, index)}`, `addc a,${variableTarget(right, index)}`, `mov ${variableTarget(target, index)},a`);
+  return out;
+}
+
+function emitFloatMantissaSub(target: ScalarVar, right: ScalarVar): string[] {
+  const out: string[] = [`mov a,${variableTarget(target, 0)}`, "clr c", `subb a,${variableTarget(right, 0)}`, `mov ${variableTarget(target, 0)},a`];
+  for (let index = 1; index < 3; index++) out.push(`mov a,${variableTarget(target, index)}`, `subb a,${variableTarget(right, index)}`, `mov ${variableTarget(target, index)},a`);
+  return out;
+}
+
+function emitFloatAddSub(target: ScalarVar, left: ScalarVar, right: ScalarVar, subtract: boolean, ctx: TranspileContext, line: number): string[] {
+  const a = allocateFloatParts(ctx, "float_a", line);
+  const b = allocateFloatParts(ctx, "float_b", line);
+  const depth = ctx.floatScratchDepth;
+  const resultSign = ensureVar(ctx, `__float_result_sign_${depth}`, line);
+  const resultExponent = ensureVar(ctx, `__float_result_exp_${depth}`, line);
+  const exponentDiff = ensureVar(ctx, `__float_exp_diff_${depth}`, line);
+  const out: string[] = [...emitFloatUnpack(left, a, ctx), ...emitFloatUnpack(right, b, ctx)];
+  if (subtract) out.push(`mov a,${variableTarget(b.sign)}`, "xrl a,#0x1", `mov ${variableTarget(b.sign)},a`);
+
+  const expDifferent = nextLabel(ctx, "float_exp_different");
+  const aSmaller = nextLabel(ctx, "float_exp_a_smaller");
+  const aligned = nextLabel(ctx, "float_exp_aligned");
+  out.push(`mov a,${variableTarget(a.exponent)}`, `cjne a,${variableTarget(b.exponent)},${expDifferent}`);
+  out.push(`mov a,${variableTarget(a.exponent)}`, `mov ${variableTarget(resultExponent)},a`, `mov a,${variableTarget(a.sign)}`, `mov ${variableTarget(resultSign)},a`, `ljmp ${aligned}`);
+  out.push(`${expDifferent}:`, `jc ${aSmaller}`);
+  out.push(`mov a,${variableTarget(a.exponent)}`, `mov ${variableTarget(resultExponent)},a`, `mov a,${variableTarget(a.sign)}`, `mov ${variableTarget(resultSign)},a`, `mov a,${variableTarget(a.exponent)}`, "clr c", `subb a,${variableTarget(b.exponent)}`, `mov ${variableTarget(exponentDiff)},a`, ...emitFloatShiftRight(b, exponentDiff, ctx, line), `ljmp ${aligned}`);
+  out.push(`${aSmaller}:`, `mov a,${variableTarget(b.exponent)}`, `mov ${variableTarget(resultExponent)},a`, `mov a,${variableTarget(b.sign)}`, `mov ${variableTarget(resultSign)},a`, `mov a,${variableTarget(b.exponent)}`, "clr c", `subb a,${variableTarget(a.exponent)}`, `mov ${variableTarget(exponentDiff)},a`, ...emitFloatShiftRight(a, exponentDiff, ctx, line), `${aligned}:`);
+
+  const differentSign = nextLabel(ctx, "float_sign_different");
+  const bLarger = nextLabel(ctx, "float_mant_b_larger");
+  const magnitudeDifferent = nextLabel(ctx, "float_mant_different");
+  const normalized = nextLabel(ctx, "float_normalized");
+  const zero = nextLabel(ctx, "float_add_zero");
+  out.push(`mov a,${variableTarget(a.sign)}`, `cjne a,${variableTarget(b.sign)},${differentSign}`);
+  out.push(...emitFloatMantissaAdd(a.mantissa, b.mantissa));
+  const addNoCarry = nextLabel(ctx, "float_add_no_carry");
+  out.push(`jnc ${addNoCarry}`, "clr c", `mov a,${variableTarget(a.mantissa, 2)}`, "rrc a", `mov ${variableTarget(a.mantissa, 2)},a`, `mov a,${variableTarget(a.mantissa, 1)}`, "rrc a", `mov ${variableTarget(a.mantissa, 1)},a`, `mov a,${variableTarget(a.mantissa, 0)}`, "rrc a", `mov ${variableTarget(a.mantissa, 0)},a`, `inc ${variableTarget(resultExponent)}`, `${addNoCarry}:`, ...emitFloatPack(target, resultSign, resultExponent, a.mantissa, ctx), `ljmp ${normalized}`);
+
+  out.push(`${differentSign}:`);
+  out.push(`mov a,${variableTarget(a.mantissa, 2)}`, `cjne a,${variableTarget(b.mantissa, 2)},${magnitudeDifferent}`, `mov a,${variableTarget(a.mantissa, 1)}`, `cjne a,${variableTarget(b.mantissa, 1)},${magnitudeDifferent}`, `mov a,${variableTarget(a.mantissa, 0)}`, `cjne a,${variableTarget(b.mantissa, 0)},${magnitudeDifferent}`, `ljmp ${zero}`);
+  out.push(`${magnitudeDifferent}:`, `jc ${bLarger}`);
+  out.push(...emitFloatMantissaSub(a.mantissa, b.mantissa), ...emitFloatNormalizeMantissa(a.mantissa, resultExponent, ctx));
+  out.push(...emitFloatPack(target, a.sign, resultExponent, a.mantissa, ctx), `ljmp ${normalized}`);
+  out.push(`${bLarger}:`, ...emitFloatMantissaSub(b.mantissa, a.mantissa), ...emitFloatNormalizeMantissa(b.mantissa, resultExponent, ctx), ...emitFloatPack(target, b.sign, resultExponent, b.mantissa, ctx), `ljmp ${normalized}`);
+  out.push(`${zero}:`, ...emitFloatZero(target), `${normalized}:`);
+  return out;
+}
+
+function emitFloatMul(target: ScalarVar, left: ScalarVar, right: ScalarVar, ctx: TranspileContext, line: number): string[] {
+  const a = allocateFloatParts(ctx, "float_mul_a", line);
+  const b = allocateFloatParts(ctx, "float_mul_b", line);
+  const depth = ctx.floatScratchDepth;
+  const resultSign = ensureVar(ctx, `__float_mul_sign_${depth}`, line);
+  const resultExponent = ensureVar(ctx, `__float_mul_exp_${depth}`, line);
+  const multiplicand = ensureVar(ctx, `__float_mul_multiplicand_${depth}`, line, 6);
+  const multiplier = ensureVar(ctx, `__float_mul_multiplier_${depth}`, line, 3);
+  const product = ensureVar(ctx, `__float_mul_product_${depth}`, line, 6);
+  const counter = ensureVar(ctx, `__float_mul_count_${depth}`, line);
+  const shiftCount = ensureVar(ctx, `__float_mul_shift_count_${depth}`, line);
+  const loop = nextLabel(ctx, "float_mul_loop");
+  const skipAdd = nextLabel(ctx, "float_mul_skip_add");
+  const highProduct = nextLabel(ctx, "float_mul_high_product");
+  const shiftLoop = nextLabel(ctx, "float_mul_shift_loop");
+  const shiftDone = nextLabel(ctx, "float_mul_shift_done");
+  const zero = nextLabel(ctx, "float_mul_zero");
+  const out: string[] = [...emitFloatUnpack(left, a, ctx), ...emitFloatUnpack(right, b, ctx)];
+  out.push(`mov a,${variableTarget(a.sign)}`, `xrl a,${variableTarget(b.sign)}`, `mov ${variableTarget(resultSign)},a`);
+  out.push(`mov a,${variableTarget(a.exponent)}`, `add a,${variableTarget(b.exponent)}`, "add a,#0x81", `mov ${variableTarget(resultExponent)},a`);
+  for (let index = 0; index < 6; index++) out.push(`mov ${variableTarget(product, index)},#0x0`);
+  out.push(`mov a,${variableTarget(a.mantissa, 0)}`, `mov ${variableTarget(multiplicand, 0)},a`, `mov a,${variableTarget(a.mantissa, 1)}`, `mov ${variableTarget(multiplicand, 1)},a`, `mov a,${variableTarget(a.mantissa, 2)}`, `mov ${variableTarget(multiplicand, 2)},a`);
+  for (let index = 3; index < 6; index++) out.push(`mov ${variableTarget(multiplicand, index)},#0x0`);
+  for (let index = 0; index < 3; index++) out.push(`mov a,${variableTarget(b.mantissa, index)}`, `mov ${variableTarget(multiplier, index)},a`);
+  out.push(`mov ${variableTarget(counter)},#0x18`, `${loop}:`, `mov a,${variableTarget(multiplier)}`, "anl a,#0x1", `jz ${skipAdd}`, `mov a,${variableTarget(product)}`, "clr c", `add a,${variableTarget(multiplicand)}`, `mov ${variableTarget(product)},a`);
+  for (let index = 1; index < 6; index++) out.push(`mov a,${variableTarget(product, index)}`, `addc a,${variableTarget(multiplicand, index)}`, `mov ${variableTarget(product, index)},a`);
+  out.push(`${skipAdd}:`, "clr c");
+  for (let index = 0; index < 6; index++) out.push(`mov a,${variableTarget(multiplicand, index)}`, "rlc a", `mov ${variableTarget(multiplicand, index)},a`);
+  out.push("clr c");
+  for (let index = 2; index >= 0; index--) out.push(`mov a,${variableTarget(multiplier, index)}`, "rrc a", `mov ${variableTarget(multiplier, index)},a`);
+  out.push(`djnz ${variableTarget(counter)},${loop}`);
+  out.push(`mov a,${variableTarget(product)}`, `orl a,${variableTarget(product, 1)}`, `orl a,${variableTarget(product, 2)}`, `orl a,${variableTarget(product, 3)}`, `orl a,${variableTarget(product, 4)}`, `orl a,${variableTarget(product, 5)}`, `jz ${zero}`);
+  out.push(`mov a,${variableTarget(product, 5)}`, `jnb acc.7,${highProduct}`, `inc ${variableTarget(resultExponent)}`, `mov ${variableTarget(shiftCount)},#0x18`, `sjmp ${shiftLoop}`);
+  out.push(`${highProduct}:`, `mov ${variableTarget(shiftCount)},#0x17`, `${shiftLoop}:`, `mov a,${variableTarget(shiftCount)}`, `jz ${shiftDone}`, "clr c");
+  for (let index = 5; index >= 0; index--) out.push(`mov a,${variableTarget(product, index)}`, "rrc a", `mov ${variableTarget(product, index)},a`);
+  out.push(`dec ${variableTarget(shiftCount)}`, `sjmp ${shiftLoop}`, `${shiftDone}:`, `mov a,${variableTarget(product)}`, `mov ${variableTarget(a.mantissa, 0)},a`, `mov a,${variableTarget(product, 1)}`, `mov ${variableTarget(a.mantissa, 1)},a`, `mov a,${variableTarget(product, 2)}`, `mov ${variableTarget(a.mantissa, 2)},a`, ...emitFloatPack(target, resultSign, resultExponent, a.mantissa, ctx), `sjmp ${shiftDone}_end`, `${zero}:`, ...emitFloatZero(target), `${shiftDone}_end:`);
+  return out;
+}
+
+function emitFloatExprToTarget(expr: string, target: ScalarVar, ctx: TranspileContext, line: number): string[] {
+  const trimmed = trimOuter(expr.trim());
+  const constant = tryEvalFloatConst(trimmed);
+  if (constant != null) return emitFloatConstant(target, constant);
+  const unaryMinus = /^-\s*([\s\S]+)$/.exec(trimmed);
+  if (unaryMinus) {
+    const out = emitFloatExprToTarget(unaryMinus[1], target, ctx, line);
+    out.push(`mov a,${variableTarget(target, 3)}`, "xrl a,#0x80", `mov ${variableTarget(target, 3)},a`);
+    return out;
+  }
+  if (/^\+\s*/.test(trimmed)) return emitFloatExprToTarget(trimmed.slice(1), target, ctx, line);
+  const source = resolveVariable(trimmed.toLowerCase(), ctx) ?? resolveXdataVariable(trimmed.toLowerCase(), ctx);
+  if (source?.category === "floating") {
+    if (source === target) return [];
+    if (ctx.xdataVars.has(source.name) || ctx.globalXdataVars.has(source.name)) {
+      return emitLoadBytesToTargetFromXdata(source.addr, target, 4);
+    }
+    return copyScalarBytes(source, target, 4);
+  }
+  const call = /^([A-Za-z_]\w*)\s*\(([\s\S]*)\)$/.exec(trimmed);
+  if (call && ctx.functions.get(call[1].toLowerCase())?.returnCategory === "floating") {
+    const fn = ctx.functions.get(call[1].toLowerCase())!;
+    const out = emitFunctionCall(fn.name, call[2], ctx, line);
+    const slot = ctx.returnSlots.get(fn.name);
+    if (slot) out.push(...copyScalarBytes(slot, target, 4));
+    return out;
+  }
+  for (const ops of [["+", "-"], ["*"]] as string[][]) {
+    const found = findTopLevelBinaryOperator(trimmed, ops);
+    if (!found) continue;
+    const depth = ctx.floatScratchDepth;
+    const left = ensureVar(ctx, `__float_expr_left_${depth}`, line, 4);
+    const right = ensureVar(ctx, `__float_expr_right_${depth}`, line, 4);
+    let out: string[];
+    ctx.floatScratchDepth = depth + 1;
+    try {
+      out = [...emitFloatExprToTarget(found.left, left, ctx, line), ...emitFloatExprToTarget(found.right, right, ctx, line)];
+    } finally {
+      ctx.floatScratchDepth = depth;
+    }
+    return [...out, ...(found.op === "*" ? emitFloatMul(target, left, right, ctx, line) : emitFloatAddSub(target, left, right, found.op === "-", ctx, line))];
+  }
+  ctx.diagnostics.push({ level: "error", line, message: "Runtime float division is not implemented yet; use multiplication, addition, or subtraction." });
+  return emitFloatConstant(target, 0);
+}
+
+function emitVariableIncDec(variable: ScalarVar, op: string, ctx: TranspileContext, line = ctx.currentFunction.lineOffset): string[] {
   if (variable.isConst) return [];
   if (ctx.pointerVars.has(variable.name)) return emitPointerIncDec(variable, op, ctx);
+  if (variable.category === "floating") {
+    const one = ensureVar(ctx, `__float_incdec_one_${ctx.floatScratchDepth}`, line, 4);
+    const out = emitFloatConstant(one, 1);
+    return [...out, ...(op === "++" ? emitFloatAddSub(variable, variable, one, false, ctx, line) : emitFloatAddSub(variable, variable, one, true, ctx, line))];
+  }
+  if (variable.size >= 4) {
+    const out: string[] = [];
+    const done = nextLabel(ctx, op === "++" ? "long_inc_done" : "long_dec_done");
+    if (op === "++") {
+      for (let index = 0; index < 3; index++) {
+        out.push(`inc ${variableTarget(variable, index)}`, `mov a,${variableTarget(variable, index)}`, `jnz ${done}`);
+      }
+      out.push(`inc ${variableTarget(variable, 3)}`, `${done}:`);
+    } else {
+      for (let index = 0; index < 4; index++) {
+        const decrement = nextLabel(ctx, "long_dec_byte");
+        const next = index < 3 ? nextLabel(ctx, "long_dec_next") : done;
+        out.push(`mov a,${variableTarget(variable, index)}`, `jz ${decrement}`, `dec ${variableTarget(variable, index)}`, `sjmp ${done}`, `${decrement}:`, `dec ${variableTarget(variable, index)}`, `${next}:`);
+      }
+    }
+    return out;
+  }
   if (variable.size >= 2) {
     const skip = nextLabel(ctx, "word_incdec_skip");
     return op === "++"
@@ -2263,6 +3063,32 @@ function emitPointerIncDec(variable: ScalarVar, op: string, ctx: TranspileContex
 }
 
 function emitCompoundToVariable(variable: ScalarVar, op: string, rhs: string, ctx: TranspileContext, line: number): string[] {
+  if (variable.category === "floating") {
+    if (op === "/") {
+      ctx.diagnostics.push({ level: "error", line, message: "Runtime float division is not implemented yet; use +=, -=, or *= instead." });
+      return [];
+    }
+    const depth = ctx.floatScratchDepth;
+    const left = ensureVar(ctx, `__float_compound_left_${depth}`, line, 4);
+    const right = ensureVar(ctx, `__float_compound_right_${depth}`, line, 4);
+    const out = copyScalarBytes(variable, left, 4);
+    ctx.floatScratchDepth = depth + 1;
+    try {
+      out.push(...emitFloatExprToTarget(rhs, right, ctx, line));
+    } finally {
+      ctx.floatScratchDepth = depth;
+    }
+    if (op === "*") out.push(...emitFloatMul(variable, left, right, ctx, line));
+    else if (op === "+" || op === "-") out.push(...emitFloatAddSub(variable, left, right, op === "-", ctx, line));
+    else ctx.diagnostics.push({ level: "error", line, message: `Unsupported runtime float compound operator ${op}=` });
+    return out;
+  }
+  if (variable.size >= 4) {
+    const expression = `${variable.name} ${op} (${rhs})`;
+    const code = emitExprToLong(expression, ctx, line);
+    const result = ensureVar(ctx, "__long_result", line, 4);
+    return [...code, ...copyScalarBytes(result, variable, 4)];
+  }
   if (variable.size >= 2) {
     const word = emitExprToWord(`${variable.name} ${op} (${rhs})`, ctx, line);
     const out = [...word, `mov ${variableTarget(variable)},a`, `mov ${variableTarget(variable, 1)},b`];
@@ -2278,6 +3104,12 @@ function emitCompoundToVariable(variable: ScalarVar, op: string, rhs: string, ct
 function emitAssignToVariable(variable: ScalarVar, expr: string, ctx: TranspileContext, line: number): string[] {
   if (variable.isConst && resolveVariable(variable.name, ctx) === variable) {
     // Initialization is allowed; later assignments are rejected in the statement handler.
+  }
+  if (variable.category === "floating") return emitFloatExprToTarget(expr, variable, ctx, line);
+  if (variable.size >= 4) {
+    const code = emitExprToLong(expr, ctx, line);
+    const result = ensureVar(ctx, "__long_result", line, 4);
+    return [...code, ...copyScalarBytes(result, variable, 4)];
   }
   const unsupportedLiteral = unsupportedArithmeticLiteral(expr);
   if (unsupportedLiteral) {
@@ -2325,6 +3157,16 @@ function emitAssignToVariable(variable: ScalarVar, expr: string, ctx: TranspileC
 }
 
 function emitAssignToXdataVariable(variable: XdataVar, expr: string, ctx: TranspileContext, line: number): string[] {
+  if (variable.category === "floating") {
+    const temporary = ensureVar(ctx, "__float_xdata_value", line, 4);
+    const code = emitFloatExprToTarget(expr, temporary, ctx, line);
+    return [...code, ...emitStoreBytesToXdataAddress(variable.addr, temporary, 4)];
+  }
+  if (variable.size >= 4) {
+    const code = emitExprToLong(expr, ctx, line);
+    const result = ensureVar(ctx, "__long_result", line, 4);
+    return [...code, ...emitStoreBytesToXdataAddress(variable.addr, result, 4)];
+  }
   const unsupportedLiteral = unsupportedArithmeticLiteral(expr);
   if (unsupportedLiteral) {
     ctx.diagnostics.push({ level: "error", line, message: unsupportedLiteral });
@@ -2371,6 +3213,11 @@ function emitExprToWord(expr: string, ctx: TranspileContext, line: number): stri
     if (size != null) return [`mov a,#${toAsmByte8(size)}`, `mov b,#${toAsmByte8(size >> 8)}`];
     ctx.diagnostics.push({ level: "error", line, message: `Cannot determine sizeof(${sizeofMatch[1]}).` });
     return ["clr a", "mov b,#0x0"];
+  }
+  if (referencesLongValue(trimmed, ctx)) {
+    const code = emitExprToLong(trimmed, ctx, line);
+    const result = ensureVar(ctx, "__long_result", line, 4);
+    return [...code, `mov a,${variableTarget(result)}`, `mov b,${variableTarget(result, 1)}`];
   }
   const constant = tryEvalConst(trimmed);
   if (constant != null) return [`mov a,#${toAsmByte8(constant)}`, `mov b,#${toAsmByte8(constant >> 8)}`];
@@ -2759,7 +3606,7 @@ function emitExprToA(expr: string, ctx: TranspileContext, line: number): string[
       ctx.diagnostics.push({ level: "error", line, message: `Unknown variable ${preInc[2]} in ${preInc[1]} expression.` });
       return ["clr a"];
     }
-    return [...emitVariableIncDec(variable, preInc[1], ctx), `mov a,${variableTarget(variable)}`];
+    return [...emitVariableIncDec(variable, preInc[1], ctx, line), `mov a,${variableTarget(variable)}`];
   }
   const postInc = /^([A-Za-z_]\w*)(\+\+|--)$/.exec(trimmed);
   if (postInc) {
@@ -2774,7 +3621,7 @@ function emitExprToA(expr: string, ctx: TranspileContext, line: number): string[
       return ["clr a"];
     }
     const old = ensureVar(ctx, "__post_value", line);
-    return [`mov a,${variableTarget(variable)}`, `mov ${variableTarget(old)},a`, ...emitVariableIncDec(variable, postInc[2], ctx), `mov a,${variableTarget(old)}`];
+    return [`mov a,${variableTarget(variable)}`, `mov ${variableTarget(old)},a`, ...emitVariableIncDec(variable, postInc[2], ctx, line), `mov a,${variableTarget(old)}`];
   }
 
   const assignmentExpr = /^([A-Za-z_]\w*)\s*([+\-*/%&|^]?=)(?!=)\s*([\s\S]+)$/.exec(trimmed);
@@ -2802,6 +3649,11 @@ function emitExprToA(expr: string, ctx: TranspileContext, line: number): string[
     if (size != null) return [`mov a,#${toAsmByte8(size)}`];
     ctx.diagnostics.push({ level: "error", line, message: `Cannot determine sizeof(${sizeofMatch[1]}).` });
     return ["clr a"];
+  }
+  if (referencesLongValue(trimmed, ctx) && !isFloatExpression(trimmed, ctx)) {
+    const code = emitExprToLong(trimmed, ctx, line);
+    const result = ensureVar(ctx, "__long_result", line, 4);
+    return [...code, `mov a,${variableTarget(result)}`];
   }
 
   const ternary = findTopLevelTernary(trimmed);
@@ -2844,6 +3696,18 @@ function emitExprToA(expr: string, ctx: TranspileContext, line: number): string[
     const zero = nextLabel(ctx, "testbit_zero");
     const done = nextLabel(ctx, "testbit_done");
     return [`jnb ${bit},${zero}`, `clr ${bit}`, "mov a,#1", `sjmp ${done}`, `${zero}:`, "clr a", `${done}:`];
+  }
+
+  const readBit = !ctx.functions.has("read_bit") && /^read_bit\s*\(([\s\S]*)\)$/i.exec(trimmed);
+  if (readBit) {
+    const bit = resolveBitOperand(readBit[1], ctx);
+    if (!bit) {
+      ctx.diagnostics.push({ level: "error", line, message: "read_bit requires an sbit name or a direct P0.0..P3.7 bit." });
+      return ["clr a"];
+    }
+    const zero = nextLabel(ctx, "read_bit_zero");
+    const done = nextLabel(ctx, "read_bit_done");
+    return [`jnb ${bit},${zero}`, "mov a,#1", `sjmp ${done}`, `${zero}:`, "clr a", `${done}:`];
   }
 
   const callMatch = /^([A-Za-z_]\w*)\s*\(([\s\S]*)\)$/.exec(trimmed);
@@ -2965,7 +3829,7 @@ function emitExprToA(expr: string, ctx: TranspileContext, line: number): string[
 
 function resolveSizeofValue(rawItem: string, ctx: TranspileContext): number | null {
   const item = trimOuter(rawItem.trim()).toLowerCase();
-  const structType = /^struct\s+([A-Za-z_]\w*)$/i.exec(item);
+  const structType = /^(?:struct|union)\s+([A-Za-z_]\w*)$/i.exec(item);
   if (structType) return ctx.structDefs.get(structType[1].toLowerCase())?.size ?? null;
 
   const dereference = /^\*\s*([A-Za-z_]\w*)$/.exec(item);
@@ -3064,6 +3928,70 @@ function emitBooleanExprToA(expr: string, ctx: TranspileContext, line: number): 
   return [...emitConditionFalseJump(expr, falseLabel, ctx, line), "mov a,#1", `sjmp ${endLabel}`, `${falseLabel}:`, "clr a", `${endLabel}:`];
 }
 
+function emitLongComparisonFalseJump(
+  leftExpr: string,
+  op: string,
+  rightExpr: string,
+  falseLabel: string,
+  ctx: TranspileContext,
+  line: number,
+): string[] {
+  const left = ensureVar(ctx, `__long_cmp_left_${ctx.labelCounter.value++}`, line, 4);
+  const right = ensureVar(ctx, `__long_cmp_right_${ctx.labelCounter.value++}`, line, 4);
+  const result = ensureVar(ctx, "__long_result", line, 4);
+  const out = [...emitExprToLong(leftExpr, ctx, line), ...copyScalarBytes(result, left, 4), ...emitExprToLong(rightExpr, ctx, line), ...copyScalarBytes(result, right, 4)];
+  if (op === "==" || op === "!=") {
+    const different = nextLabel(ctx, "long_cmp_different");
+    const mismatch = op === "==" ? falseLabel : different;
+    for (let index = 3; index >= 0; index--) out.push(`mov a,${variableTarget(left, index)}`, `cjne a,${variableTarget(right, index)},${mismatch}`);
+    if (op !== "==") out.push(`sjmp ${falseLabel}`, `${different}:`);
+    return out;
+  }
+  if (isSignedLongExpression(leftExpr, ctx) && isSignedLongExpression(rightExpr, ctx)) {
+    // Flip the sign bit so an unsigned byte comparison has signed ordering.
+    out.push(`mov a,${variableTarget(left, 3)}`, "xrl a,#0x80", `mov ${variableTarget(left, 3)},a`);
+    out.push(`mov a,${variableTarget(right, 3)}`, "xrl a,#0x80", `mov ${variableTarget(right, 3)},a`);
+  }
+  const different = nextLabel(ctx, "long_cmp_order");
+  const lessOrEqual = nextLabel(ctx, "long_cmp_true");
+  for (let index = 3; index >= 0; index--) out.push(`mov a,${variableTarget(left, index)}`, `cjne a,${variableTarget(right, index)},${different}`);
+  if (op === "<" || op === ">") out.push(`sjmp ${falseLabel}`);
+  out.push(`${different}:`);
+  if (op === "<" || op === "<=") out.push(`jc ${lessOrEqual}`, `sjmp ${falseLabel}`, `${lessOrEqual}:`);
+  else if (op === ">") out.push(`jc ${falseLabel}`);
+  else out.push(`jc ${falseLabel}`);
+  return out;
+}
+
+function emitFloatComparisonFalseJump(
+  leftExpr: string,
+  op: string,
+  rightExpr: string,
+  falseLabel: string,
+  ctx: TranspileContext,
+  line: number,
+): string[] {
+  const leftValue = tryEvalFloatConst(leftExpr);
+  const rightValue = tryEvalFloatConst(rightExpr);
+  if (leftValue != null && rightValue != null) {
+    const comparison = op === "==" ? leftValue === rightValue : op === "!=" ? leftValue !== rightValue : op === "<" ? leftValue < rightValue : op === ">" ? leftValue > rightValue : op === "<=" ? leftValue <= rightValue : leftValue >= rightValue;
+    return comparison ? [] : [`sjmp ${falseLabel}`];
+  }
+  if (op !== "==" && op !== "!=") {
+    ctx.diagnostics.push({ level: "error", line, message: "Only equality comparisons are implemented for runtime float values." });
+    return [`sjmp ${falseLabel}`];
+  }
+  const depth = ctx.floatScratchDepth;
+  const left = ensureVar(ctx, `__float_cmp_left_${depth}`, line, 4);
+  const right = ensureVar(ctx, `__float_cmp_right_${depth}`, line, 4);
+  const different = nextLabel(ctx, "float_cmp_different");
+  const out = [...emitFloatExprToTarget(leftExpr, left, ctx, line), ...emitFloatExprToTarget(rightExpr, right, ctx, line)];
+  const mismatch = op === "==" ? falseLabel : different;
+  for (let index = 3; index >= 0; index--) out.push(`mov a,${variableTarget(left, index)}`, `cjne a,${variableTarget(right, index)},${mismatch}`);
+  if (op === "!=") out.push(`sjmp ${falseLabel}`, `${different}:`);
+  return out;
+}
+
 function emitMulDivToA(left: string, op: string, right: string, ctx: TranspileContext, line: number): string[] {
   const lhs = ensureVar(ctx, "__arith_lhs", line);
   const out = [...emitExprToA(left, ctx, line), `mov ${variableTarget(lhs)},a`, ...emitExprToA(right, ctx, line), "mov b,a", `mov a,${variableTarget(lhs)}`];
@@ -3160,6 +4088,12 @@ function emitConditionFalseJump(cond: string, falseLabel: string, ctx: Transpile
   if (bit) return [`jnb ${bit},${falseLabel}`];
 
   const cmp = findComparator(text);
+  if (cmp && (isFloatExpression(cmp.left, ctx) || isFloatExpression(cmp.right, ctx))) {
+    return emitFloatComparisonFalseJump(cmp.left, cmp.op, cmp.right, falseLabel, ctx, line);
+  }
+  if (cmp && referencesLongValue(cmp.left, ctx) || cmp && referencesLongValue(cmp.right, ctx)) {
+    return emitLongComparisonFalseJump(cmp.left, cmp.op, cmp.right, falseLabel, ctx, line);
+  }
   if (cmp) {
     const leftBit = ctx.sbitMap.get(cmp.left.toLowerCase());
     const rightConst = tryEvalConst(cmp.right);
@@ -3564,6 +4498,22 @@ function allocateFunctionParams(
   }
 }
 
+function allocateFunctionReturnSlots(
+  functions: Map<string, FunctionInfo>,
+  nextVarAddr: { value: number },
+  diagnostics: AsmDiagnostic[],
+): Map<string, ScalarVar> {
+  const slots = new Map<string, ScalarVar>();
+  for (const fn of functions.values()) {
+    if (fn.returnSize < 4 || (fn.returnCategory !== "integer" && fn.returnCategory !== "floating")) continue;
+    const addr = nextVarAddr.value;
+    nextVarAddr.value += 4;
+    if (nextVarAddr.value > 0x80) diagnostics.push({ level: "error", message: `Return value of ${fn.name} exceeds internal RAM 0x30..0x7F.` });
+    slots.set(fn.name, { name: `__return_${fn.name}`, addr, size: 4, signed: fn.returnSigned, category: fn.returnCategory ?? "integer" });
+  }
+  return slots;
+}
+
 function bindFunctionParams(fn: FunctionInfo, ctx: TranspileContext, diagnostics: AsmDiagnostic[]): void {
   for (const param of fn.params) {
     const addr = param.argAddr;
@@ -3576,7 +4526,7 @@ function bindFunctionParams(fn: FunctionInfo, ctx: TranspileContext, diagnostics
       ctx.structVars.set(param.name, { name: param.name, structName: param.structName, baseAddr: addr, storage: "ram", elementCount: 1 });
       continue;
     }
-    ctx.vars.set(param.name, { name: param.name, addr, size, signed: param.signed });
+    ctx.vars.set(param.name, { name: param.name, addr, size, signed: param.signed, category: param.category });
     if (param.pointer) {
       ctx.pointerVars.set(param.name, param.pointerKind ?? "ram");
       ctx.pointerElementSizes.set(
@@ -3640,7 +4590,7 @@ function parseParamList(raw: string, diagnostics: AsmDiagnostic[], line: number)
       const type = scalarTypeInfo(header);
       if (!type) continue;
       if (type.unsupportedReason) diagnostics.push({ level: "error", line, message: `${scalar[2]}: ${type.unsupportedReason}` });
-      params.push({ name: scalar[2].toLowerCase(), pointer: false, size: type.size, signed: type.signed });
+      params.push({ name: scalar[2].toLowerCase(), pointer: false, size: type.size, signed: type.signed, category: type.category });
     }
   }
   return params;
@@ -4149,7 +5099,15 @@ function emitFunctionCall(name: string, rawArgs: string, ctx: TranspileContext, 
       continue;
     }
 
-    if ((param.size ?? 1) >= 2) {
+    if (param.category === "floating") {
+      const temporary = ensureVar(ctx, "__float_arg", line, 4);
+      out.push(...emitFloatExprToTarget(arg, temporary, ctx, line));
+      for (let byte = 0; byte < Math.min(4, param.size ?? 4); byte++) out.push(`mov ${toAsmByte(base + byte)},${variableTarget(temporary, byte)}`);
+    } else if ((param.size ?? 1) >= 4) {
+      const temporary = ensureVar(ctx, "__long_result", line, 4);
+      out.push(...emitExprToLong(arg, ctx, line));
+      for (let byte = 0; byte < 4; byte++) out.push(`mov a,${variableTarget(temporary, byte)}`, `mov ${toAsmByte(base + byte)},a`);
+    } else if ((param.size ?? 1) >= 2) {
       out.push(...emitExprToWord(arg, ctx, line), `mov ${toAsmByte(base)},a`, `mov ${toAsmByte(base + 1)},b`);
       for (let byte = 2; byte < (param.size ?? 1); byte++) out.push(`mov ${toAsmByte(base + byte)},#0`);
     } else {
@@ -4158,6 +5116,13 @@ function emitFunctionCall(name: string, rawArgs: string, ctx: TranspileContext, 
   }
 
   out.push(`call ${name}`);
+  if (fn.returnSize >= 4 && fn.returnCategory === "integer") {
+    const slot = ctx.returnSlots.get(fn.name);
+    if (slot) {
+      const result = ensureVar(ctx, "__long_result", line, 4);
+      out.push(...copyScalarBytes(slot, result, 4));
+    }
+  }
   return out;
 }
 
@@ -4169,12 +5134,15 @@ function transpileSwitchStatement(
   ctx: TranspileContext,
   line: number,
 ): { code: string[]; needDelay: boolean; needWrite: boolean } {
-  const parsed = parseSwitchCases(body, line, ctx.diagnostics);
   const selectorSize = switchExpressionSize(switchExpr, ctx);
+  const parsed = parseSwitchCases(body, line, ctx.diagnostics, selectorSize);
   const wide = selectorSize > 1 || parsed.some((item) => item.kind === "case" && item.value != null && item.value > 0xff);
-  const tmp = ensureVar(ctx, `__switch_value_${ctx.labelCounter.value++}`, line, wide ? 2 : 1);
+  const longWide = selectorSize > 2 || parsed.some((item) => item.kind === "case" && item.value != null && item.value > 0xffff);
+  const tmp = ensureVar(ctx, `__switch_value_${ctx.labelCounter.value++}`, line, longWide ? 4 : wide ? 2 : 1);
   const endLabel = nextLabel(ctx, "switch_end");
-  const out = wide
+  const out = longWide
+    ? [...emitExprToLong(switchExpr, ctx, line), ...copyScalarBytes(ensureVar(ctx, "__long_result", line, 4), tmp, 4)]
+    : wide
     ? [...emitExprToWord(switchExpr, ctx, line), `mov ${variableTarget(tmp)},a`, `mov ${variableTarget(tmp, 1)},b`]
     : [...emitExprToA(switchExpr, ctx, line), `mov ${variableTarget(tmp)},a`];
   let needDelay = false;
@@ -4189,6 +5157,10 @@ function transpileSwitchStatement(
     const next = nextLabel(ctx, "case_next");
     out.push(`mov a,${variableTarget(tmp)}`, `cjne a,#${toAsmByte8(item.value)},${next}`);
     if (wide) out.push(`mov a,${variableTarget(tmp, 1)}`, `cjne a,#${toAsmByte8(item.value >> 8)},${next}`);
+    if (longWide) {
+      out.push(`mov a,${variableTarget(tmp, 2)}`, `cjne a,#${toAsmByte8(item.value >> 16)},${next}`);
+      out.push(`mov a,${variableTarget(tmp, 3)}`, `cjne a,#${toAsmByte8(item.value >> 24)},${next}`);
+    }
     out.push(`ljmp ${labels[index]}`, `${next}:`);
   });
   out.push(`ljmp ${defaultLabel}`);
@@ -4224,7 +5196,7 @@ type SwitchMarker = {
   relativeLine: number;
 };
 
-function parseSwitchCases(body: string, baseLine: number, diagnostics: AsmDiagnostic[]): ParsedSwitchCase[] {
+function parseSwitchCases(body: string, baseLine: number, diagnostics: AsmDiagnostic[], selectorSize = 2): ParsedSwitchCase[] {
   const markers = findSwitchMarkers(body, baseLine, diagnostics);
   const seenValues = new Map<number, number>();
   let seenDefaultLine: number | null = null;
@@ -4249,7 +5221,7 @@ function parseSwitchCases(body: string, baseLine: number, diagnostics: AsmDiagno
       continue;
     }
 
-    const value = tryEvalConst(marker.rawValue ?? "");
+    const value = tryEvalConstWide(marker.rawValue ?? "") ?? tryEvalConst(marker.rawValue ?? "");
     if (value == null) {
       diagnostics.push({
         level: "error",
@@ -4259,7 +5231,8 @@ function parseSwitchCases(body: string, baseLine: number, diagnostics: AsmDiagno
       parsed.push({ kind: "case", body: itemBody, relativeLine: marker.relativeLine, dispatchable: false });
       continue;
     }
-    const normalized = value & 0xffff;
+    const unsignedValue = value >>> 0;
+    const normalized = selectorSize >= 4 ? unsignedValue : selectorSize >= 2 ? unsignedValue & 0xffff : unsignedValue & 0xff;
     const previousLine = seenValues.get(normalized);
     const dispatchable = previousLine == null;
     if (!dispatchable) {
@@ -4357,6 +5330,8 @@ function switchExpressionSize(expression: string, ctx: TranspileContext): number
     const lowered = identifier.toLowerCase();
     if ((resolveVariable(lowered, ctx)?.size ?? 0) > 1 || (resolveXdataVariable(lowered, ctx)?.size ?? 0) > 1 || ctx.sfr16Map.has(lowered) || (ctx.functions.get(lowered)?.returnSize ?? 0) > 1) return 2;
   }
+  const wideConstant = tryEvalConstWide(expression);
+  if (wideConstant != null && (wideConstant < 0 || wideConstant > 0xffff || /[lL]/.test(expression))) return 4;
   const constant = tryEvalConst(expression);
   return constant != null && constant > 0xff ? 2 : 1;
 }
@@ -4393,6 +5368,39 @@ function resolveStructValue(expr: string, ctx: TranspileContext): (StructVar & {
   if (!value || value.storage !== "ram" || value.elementCount !== 1) return null;
   const def = ctx.structDefs.get(value.structName);
   return { ...value, size: def?.size ?? 1 };
+}
+
+function resolveDirectStructObject(expr: string, ctx: TranspileContext): (StructVar & { size: number }) | null {
+  const text = trimOuter(expr.trim()).toLowerCase();
+  if (!/^[a-z_]\w*$/.test(text)) return null;
+  const value = ctx.structVars.get(text);
+  if (!value || value.elementCount !== 1) return null;
+  const def = ctx.structDefs.get(value.structName);
+  if (!def) return null;
+  return { ...value, size: def.size };
+}
+
+function emitCopyStructObject(target: StructVar & { size: number }, source: StructVar & { size: number }, ctx: TranspileContext, line: number): string[] {
+  if (target.structName !== source.structName || target.size !== source.size) {
+    ctx.diagnostics.push({ level: "error", line, message: `Cannot assign incompatible structures ${source.structName} to ${target.structName}.` });
+    return [];
+  }
+  if (target.isConst || target.storage === "code") {
+    ctx.diagnostics.push({ level: "error", line, message: "Cannot assign to a const/code structure object." });
+    return [];
+  }
+  if (source.storage === "code") {
+    ctx.diagnostics.push({ level: "error", line, message: "Reading a code structure object is not implemented." });
+    return [];
+  }
+  const out: string[] = [];
+  for (let index = 0; index < target.size; index++) {
+    if (source.storage === "xdata") out.push(...emitLoadByteFromXdataAddress(source.baseAddr + index));
+    else out.push(`mov a,${toAsmByte(source.baseAddr + index)}`);
+    if (target.storage === "xdata") out.push(...emitStoreByteToXdataAddress(target.baseAddr + index));
+    else out.push(`mov ${toAsmByte(target.baseAddr + index)},a`);
+  }
+  return out;
 }
 
 function codePointerImmediate(expr: string, ctx: TranspileContext): { low: string; high: string } | null {
@@ -4486,6 +5494,24 @@ function emitStoreWordToXdataAddress(address: number): string[] {
   return [`mov dptr,#${toAsmByte(address)}`, "movx @dptr,a", "inc dptr", "mov a,b", "movx @dptr,a"];
 }
 
+function emitStoreBytesToXdataAddress(address: number, source: ScalarVar, count: number): string[] {
+  const out: string[] = [`mov dpl,#${toAsmByte8(address)}`, `mov dph,#${toAsmByte8(address >> 8)}`];
+  for (let index = 0; index < count; index++) {
+    if (index > 0) out.push("inc dptr");
+    out.push(`mov a,${variableTarget(source, index)}`, "movx @dptr,a");
+  }
+  return out;
+}
+
+function emitLoadBytesToTargetFromXdata(address: number, target: ScalarVar, count: number): string[] {
+  const out: string[] = [`mov dpl,#${toAsmByte8(address)}`, `mov dph,#${toAsmByte8(address >> 8)}`];
+  for (let index = 0; index < count; index++) {
+    if (index > 0) out.push("inc dptr");
+    out.push("movx a,@dptr", `mov ${variableTarget(target, index)},a`);
+  }
+  return out;
+}
+
 function emitXdataConstantBytes(baseAddr: number, bytes: number[]): string[] {
   const out: string[] = [`mov dptr,#${toAsmByte(baseAddr)}`];
   bytes.forEach((value, index) => {
@@ -4549,9 +5575,6 @@ function unsupportedArithmeticLiteral(expression: string): string | null {
   if (/(?:\b\d+\.\d*|(?:^|[^A-Za-z0-9_])\.\d+|\b\d+[eE][+\-]?\d+)(?:[eE][+\-]?\d+)?[fFlL]?\b/.test(codeOnly)) {
     return "Floating-point literals and arithmetic are not implemented.";
   }
-  if (/\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[0-7]+|\d+)[lL](?:[uU])?\b|\b(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[0-7]+|\d+)[uU][lL]\b/.test(codeOnly)) {
-    return "32-bit long literal arithmetic is not implemented.";
-  }
   return null;
 }
 
@@ -4594,6 +5617,33 @@ function tryEvalConst(raw: string): number | null {
       if (cast.type.signed && (integer & 0x80)) integer |= 0xff00;
     }
     return integer & 0xffff;
+  } catch {
+    return null;
+  }
+}
+
+function tryEvalConstWide(raw: string): number | null {
+  const cast = peelLeadingScalarCasts(raw);
+  if (cast.type?.category === "floating") return null;
+  let expr = cast.expression.trim();
+  if (!expr) return null;
+  expr = expr.replace(/\b([0-9A-F]+)h\b/gi, (_match, hex: string) => `0x${hex}`);
+  expr = expr.replace(/\b([01]+)b\b/gi, (_match, bits: string) => `0b${bits}`);
+  expr = expr.replace(/'(?:\\.|[^'\\])+'/g, (token) => {
+    const decoded = decodeCCharacter(token);
+    return decoded == null ? token : String(decoded);
+  });
+  expr = expr.replace(/(^|[^A-Za-z0-9_.])0([0-7]+)\b/g, (_match, prefix: string, digits: string) => `${prefix}0o${digits}`);
+  expr = expr.replace(/\b(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+)(?:[uUlL]+)\b/g, "$1");
+  if (!/^[0-9a-fxobA-F\s().,+\-~!*\/%%<>=&|^?:]+$/.test(expr)) return null;
+  if (/(?:\+\+|--|=>|===|!==)/.test(expr)) return null;
+  try {
+    const value = Function(`"use strict"; return ((${expr}));`)();
+    if (typeof value !== "number" && typeof value !== "boolean") return null;
+    if (typeof value === "number" && !Number.isFinite(value)) return null;
+    const integer = typeof value === "boolean" ? (value ? 1 : 0) : Math.trunc(value);
+    if (!Number.isSafeInteger(integer) || integer < -0x80000000 || integer > 0xffffffff) return null;
+    return integer | 0;
   } catch {
     return null;
   }

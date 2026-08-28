@@ -1,0 +1,10 @@
+-muwx
+-i C:\Users\Admin\OneDrive\Робочий стіл\simulator\asm\lab3_matrix_s.ihx
+-M
+-I 0x0100
+-b HOME = 0x0000
+-b ISEG = 0x0000
+-b BSEG = 0x0000
+C:\Users\Admin\OneDrive\Робочий стіл\simulator\asm\lab3_matrix_s.rel
+
+-e

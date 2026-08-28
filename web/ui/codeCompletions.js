@@ -191,8 +191,12 @@ export const C_MEMORY_QUALIFIERS = new Set(`
 `.trim().split(/\s+/));
 export const C_BUILTINS = new Set([
     "_nop_", "_crol_", "_cror_", "_irol_", "_iror_", "_testbit_", "delay",
+    "set_bit", "clear_bit", "toggle_bit", "pulse_bit", "read_bit", "wait_bit_high", "wait_bit_low",
+    "enable_interrupts", "disable_interrupts", "start_timer0", "stop_timer0", "start_timer1", "stop_timer1",
+    "enable_uart", "disable_uart", "clear_uart_flags",
 ]);
 const CONTROL_SNIPPETS = [
+    cSnippet("starter", "Minimal C51 program for learning from zero", "#include <stdint.h>\nint main(void) {\n    uint8_t value = 0;\n    while (1) {\n        P0 = value++;\n        delay();\n    }\n}", ["beginner", "start", "template", "program", "hello"], "C beginner", "Beginner C51 program"),
     cSnippet("if", "if statement", "if (condition) {\n    \n}"),
     cSnippet("ifelse", "if / else statement", "if (condition) {\n    \n} else {\n    \n}", ["else"]),
     cSnippet("switch", "switch statement", "switch (value) {\ncase 0:\n    break;\ndefault:\n    break;\n}"),
@@ -200,7 +204,11 @@ const CONTROL_SNIPPETS = [
     cSnippet("for declaration", "C99 for loop with a block-scoped counter", "for (unsigned char i = 0; i < count; i++) {\n    \n}", ["for", "c99", "counter"], "C snippet", "C99 for declaration"),
     cSnippet("while", "while loop", "while (condition) {\n    \n}"),
     cSnippet("do", "do / while loop", "do {\n    \n} while (condition);", ["dowhile"]),
-    cSnippet("main", "C51 entry function", "void main(void)\n{\n    \n}"),
+    cSnippet("main", "C51 entry function (standard int return)", "int main(void)\n{\n    \n    return 0;\n}"),
+    cSnippet("void main", "C51 entry function without a return value", "void main(void)\n{\n    \n}", ["main", "void"]),
+    cSnippet("variable", "Declare an 8-bit variable and give it an initial value", "uint8_t value = 0;", ["beginner", "variable", "declare", "uint8"]),
+    cSnippet("assignment", "Write a value to an ADuC841 port", "P0 = value;", ["beginner", "variable", "port", "write"]),
+    cSnippet("increment", "Increase a variable by one", "value++;", ["beginner", "variable", "counter", "increment"]),
     cSnippet("function", "Function definition", "void function(void)\n{\n    \n}", ["void"]),
     cSnippet("prototype", "Function prototype", "void function(void);"),
     cSnippet("struct", "Structure declaration with 8-bit and 16-bit fields", "struct Name {\n    unsigned char status;\n    unsigned int value;\n};", ["layout", "member", "little endian"], "C structure", "struct Name { ... }"),
@@ -234,6 +242,15 @@ const CONTROL_SNIPPETS = [
     cSnippet("irol", "Rotate an unsigned int left", "value = _irol_(value, 1);", ["_irol_", "intrinsic"]),
     cSnippet("iror", "Rotate an unsigned int right", "value = _iror_(value, 1);", ["_iror_", "intrinsic"]),
     cSnippet("testbit", "Test and clear a bit", "value = _testbit_(FLAG);", ["_testbit_", "intrinsic"]),
+    cSnippet("set_bit", "Set an sbit or direct port bit", "set_bit(P1.0);", ["intrinsic", "bit", "port"]),
+    cSnippet("clear_bit", "Clear an sbit or direct port bit", "clear_bit(P1.0);", ["intrinsic", "bit", "port"]),
+    cSnippet("toggle_bit", "Toggle an sbit or direct port bit", "toggle_bit(P1.0);", ["intrinsic", "bit", "port"]),
+    cSnippet("pulse_bit", "Emit a one-instruction high/low pulse on a bit", "pulse_bit(P1.0);", ["intrinsic", "bit", "pulse"]),
+    cSnippet("read_bit", "Read an sbit or direct port bit as 0 or 1", "if (read_bit(P1.0)) {\n    \n}", ["intrinsic", "bit", "port"]),
+    cSnippet("wait_bit", "Busy-wait for a bit level", "wait_bit_high(P1.0);", ["intrinsic", "bit", "wait"]),
+    cSnippet("interrupts", "Enable or disable global interrupts", "enable_interrupts();", ["intrinsic", "interrupt", "ea"]),
+    cSnippet("timer", "Start or stop Timer 0/1", "start_timer0();", ["intrinsic", "timer", "tr0", "tr1"]),
+    cSnippet("uart", "Control UART receiver and clear serial flags", "enable_uart();\nclear_uart_flags();", ["intrinsic", "uart", "serial"]),
     cSnippet("adcresult", "Combine the 12-bit ADC result", "((ADCDATAH & 0x0F) << 8) | ADCDATAL", ["adc", "adcdata"]),
 ];
 const PREPROCESSOR_COMPLETIONS = [

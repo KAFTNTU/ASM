@@ -101,14 +101,19 @@ for (const [name, source, pattern] of [
   ["far object", `unsigned int far value; void main(void) { }`, /far object storage is not implemented/i],
   ["XDATA overflow", `unsigned char xdata huge[2049]; void main(void) { }`, /exceeds ADuC841 XDATA 0x0000\.\.0x07FF/i],
   ["nonconstant global XDATA initializer", `unsigned char source; unsigned char xdata value = source; void main(void) { }`, /Global initializer for value must be a constant expression/i],
-  ["floating XDATA object", `float xdata value; void main(void) { }`, /Floating-point lowering is not implemented/i],
 ]) {
   const result = transpileCToAsm(source);
   assert.equal(result.ok, false, `${name} must fail`);
   assert.ok(errors(result).some((item) => pattern.test(item.message)), `${name}: missing diagnostic ${pattern}`);
 }
 
-console.log("C51 XDATA object tests passed (3 positive programs + runtime + 5 negative groups)");
+const floatXdata = expectSuccessfulProgram("floating XDATA object", `
+float xdata value = 1.5f;
+void main(void) { value = 2.25f; }
+`).transpiled;
+assert.match(floatXdata.asm, /movx @dptr,a/i);
+
+console.log("C51 XDATA object tests passed (4 positive programs + runtime + 4 negative groups)");
 
 async function runRuntime(hex, expected) {
   const wasmBytes = fs.readFileSync(new URL("../public/emu8051.wasm", import.meta.url));
