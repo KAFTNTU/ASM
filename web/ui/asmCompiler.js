@@ -2087,12 +2087,15 @@ function tokenizeAsmExpression(raw) {
         const numberMatch = /^([0-9a-f]+h|0x[0-9a-f]+|0b[01]+|[01]+b|\d+)/i.exec(tail);
         if (numberMatch) {
             const text = numberMatch[1];
-            const value = /^0x/i.test(text)
-                ? Number.parseInt(text.slice(2), 16)
-                : /^0b/i.test(text)
-                    ? Number.parseInt(text.slice(2), 2)
-                    : /h$/i.test(text)
-                        ? Number.parseInt(text.slice(0, -1), 16)
+            // Check the trailing `h` form before the `0b` prefix.  In assembly,
+            // literals such as `0B1h` are hexadecimal; a case-insensitive `0b`
+            // check would otherwise mistake them for binary and turn `0B1h` into 1.
+            const value = /h$/i.test(text)
+                ? Number.parseInt(text.slice(0, -1), 16)
+                : /^0x/i.test(text)
+                    ? Number.parseInt(text.slice(2), 16)
+                    : /^0b/i.test(text)
+                        ? Number.parseInt(text.slice(2), 2)
                         : /b$/i.test(text)
                             ? Number.parseInt(text.slice(0, -1), 2)
                             : Number.parseInt(text, 10);
