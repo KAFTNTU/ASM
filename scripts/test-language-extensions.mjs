@@ -123,6 +123,19 @@ assert.deepEqual(
   "bare C tokens must produce line-specific errors",
 );
 
+const asmSelectedAsC = checkC(`DAT EQU R0
+ORG 0000h
+MOV SP,#2Fh
+HOLD:
+SJMP HOLD
+RET
+END`);
+assert.deepEqual(
+  asmSelectedAsC.diagnostics.filter((item) => item.level === "error").map((item) => item.line),
+  [1, 2, 3, 4, 5, 6, 7],
+  "ASM pasted into the C editor must underline every ASM line",
+);
+
 const unsupportedStatementC = transpileCToAsm(`
 void main(void) {
   pokpkp;

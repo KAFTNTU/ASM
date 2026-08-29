@@ -1,4 +1,5 @@
 import type { AsmDiagnostic } from "./asmCompiler";
+import { ASM_DIRECTIVES, ASM_MNEMONICS } from "./codeCompletions";
 
 export type CCheckResult = {
   ok: boolean;
@@ -40,7 +41,8 @@ export function checkC(source: string): CCheckResult {
   const hasMain = /\bmain\s*\(/i.test(masked);
   if (!hasMain) {
     diagnostics.push({ level: "warning", message: "C51: add a main() entry function." });
-    addStandaloneSyntaxDiagnostics(masked, diagnostics);
+    const asmLines = addAsmModeMismatchDiagnostics(masked, diagnostics);
+    addStandaloneSyntaxDiagnostics(masked, diagnostics, asmLines);
   }
 
   if (/\b(?:reti|ret)\s*;/i.test(masked)) {
@@ -66,7 +68,7 @@ export function checkC(source: string): CCheckResult {
  * exact source line; C should do the same instead of only showing the generic
  * "main() was not found" message (which has no line to underline).
  */
-function addStandaloneSyntaxDiagnostics(masked: string, diagnostics: AsmDiagnostic[]): void {
+function addStandaloneSyntaxDiagnostics(masked: string, diagnostics: AsmDiagnostic[], existingLines = new Set<number>()): void {
   const lines = masked.split("\n");
   let continuedPreprocessorLine = false;
 
@@ -82,6 +84,7 @@ function addStandaloneSyntaxDiagnostics(masked: string, diagnostics: AsmDiagnost
     }
 
     if (/^[A-Za-z_]\w*$/.test(line)) {
+      if (existingLines.has(index + 1)) return;
       diagnostics.push({
         level: "error",
         line: index + 1,
@@ -91,6 +94,7 @@ function addStandaloneSyntaxDiagnostics(masked: string, diagnostics: AsmDiagnost
     }
 
     if (/^(?:0[xX][0-9a-fA-F]+|\d+)$/.test(line)) {
+      if (existingLines.has(index + 1)) return;
       diagnostics.push({
         level: "error",
         line: index + 1,
@@ -98,6 +102,40 @@ function addStandaloneSyntaxDiagnostics(masked: string, diagnostics: AsmDiagnost
       });
     }
   });
+}
+
+/** Detect a pasted ASM program when the editor is currently set to C. */
+function addAsmModeMismatchDiagnostics(masked: string, diagnostics: AsmDiagnostic[]): Set<number> {
+  const lines = masked.split("\n");
+  const entries = lines.map((raw, index) => {
+    const line = raw.trim();
+    const tokens = line.split(/\s+/).filter(Boolean);
+    const first = (tokens[0] ?? "").replace(/[:,].*$/, "").toLowerCase();
+    const second = (tokens[1] ?? "").replace(/[,].*$/, "").toLowerCase();
+    const label = /^[A-Za-z_.$?][\w.$?]*:\s*$/.test(line);
+    const asmLike = label || ASM_MNEMONICS.has(first) || ASM_DIRECTIVES.has(first) || ASM_DIRECTIVES.has(second);
+    return { index, line, first, second, asmLike };
+  }).filter((entry) => entry.line && !entry.line.startsWith("#"));
+
+  const hasDirective = entries.some((entry) =>
+    ASM_DIRECTIVES.has(entry.first) || ASM_DIRECTIVES.has(entry.second) || /\.area\b/i.test(entry.line),
+  );
+  // A single C identifier can coincidentally share an assembler name. Require
+  // either a real assembler directive or multiple assembler-looking lines.
+  if (!hasDirective && entries.filter((entry) => entry.asmLike).length < 2) return new Set<number>();
+
+  const linesWithErrors = new Set<number>();
+  for (const entry of entries) {
+    if (!entry.asmLike) continue;
+    linesWithErrors.add(entry.index + 1);
+    const token = entry.first || entry.second || "line";
+    diagnostics.push({
+      level: "error",
+      line: entry.index + 1,
+      message: `ASM syntax '${token.toUpperCase()}' is not valid C. Select ASM in the language menu.`,
+    });
+  }
+  return linesWithErrors;
 }
 
 function maskCommentsAndStrings(source: string): string {
