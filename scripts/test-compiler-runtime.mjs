@@ -56,9 +56,87 @@ assert.deepEqual(
 );
 await expectProgram(translated.asm, 0x80, 0x5a, "C51 typedef/for/16-bit switch program");
 
+await expectProgram(
+  cAsm(`void main(void) {
+     unsigned int product = 300 * 2;
+     unsigned int quotient = 0x1234 / 2;
+     unsigned int remainder = 1000 % 300;
+     P0 = product;
+     P1 = product >> 8;
+     P2 = quotient;
+     while (1) { }
+   }`, "C51 word multiply/divide runtime program"),
+  { 0x80: 0x58, 0x90: 0x02, 0xa0: 0x1a },
+  "C51 word multiply/divide runtime program",
+);
+
+await expectProgram(
+  cAsm(`void main(void) {
+     signed char dividend = -7;
+     signed char divisor = 3;
+     P0 = dividend / divisor;
+     P1 = dividend % divisor;
+     while (1) { }
+   }`, "C51 signed byte division runtime program"),
+  { 0x80: 0xfe, 0x90: 0xff },
+  "C51 signed byte division runtime program",
+);
+
+await expectProgram(
+  cAsm(`void main(void) {
+     unsigned long value = 0x12345678UL;
+     P0 = (unsigned char)value;
+     P1 = (unsigned char)(value >> 8);
+     P2 = (unsigned char)(value >> 16);
+     while (1) { }
+   }`, "C51 narrowing long cast runtime program"),
+  { 0x80: 0x78, 0x90: 0x56, 0xa0: 0x34 },
+  "C51 narrowing long cast runtime program",
+);
+
+await expectProgram(
+  cAsm(`void main(void) {
+     unsigned int value = 0;
+     unsigned int old = value--;
+     P0 = value;
+     P1 = old;
+     P2 = value >> 8;
+     while (1) { }
+   }`, "C51 word post-decrement runtime program"),
+  { 0x80: 0xff, 0x90: 0x00, 0xa0: 0xff },
+  "C51 word post-decrement runtime program",
+);
+
+await expectProgram(
+  cAsm(`void main(void) {
+     unsigned int value = 0x0100;
+     P0 = (value && value > 0xff) ? 0xa5 : 0;
+     while (1) { }
+   }`, "C51 word truthiness runtime program"),
+  0x80,
+  0xa5,
+  "C51 word truthiness runtime program",
+);
+
+await expectProgram(
+  cAsm(`void main(void) {
+     long left = -1L;
+     long right = 1L;
+     P0 = (left < right && right > left) ? 0x5a : 0;
+     while (1) { }
+   }`, "C51 long comparison/ternary runtime program"),
+  0x80,
+  0x5a,
+  "C51 long comparison/ternary runtime program",
+);
+
 console.log("Compiler runtime tests passed in public/emu8051.wasm");
 
 async function expectProgram(source, sfrAddress, expected, name) {
+  const checks = typeof sfrAddress === "object"
+    ? Object.fromEntries(Object.entries(sfrAddress).map(([address, value]) => [Number(address), value]))
+    : { [sfrAddress]: expected };
+  if (typeof sfrAddress === "object") name = expected;
   const compiled = compileAsm(source);
   assert.deepEqual(
     compiled.diagnostics.filter((item) => item.level === "error"),
@@ -91,20 +169,27 @@ async function expectProgram(source, sfrAddress, expected, name) {
     for (let tick = 0; tick < 20_000; tick++) {
       // A zero result is a normal wait-state cycle, not an emulator failure.
       emu.emu_tick(cpu);
-      if ((emu.emu_get_sfr(cpu, sfrAddress) & 0xff) === expected) {
+      if (Object.entries(checks).every(([address, value]) => (emu.emu_get_sfr(cpu, Number(address)) & 0xff) === value)) {
         matched = true;
         break;
       }
     }
-    const actual = emu.emu_get_sfr(cpu, sfrAddress) & 0xff;
+    const actual = Object.fromEntries(Object.keys(checks).map((address) => [address, emu.emu_get_sfr(cpu, Number(address)) & 0xff]));
     const pc = emu.emu_get_pc(cpu) & 0xffff;
     assert.ok(
       matched,
-      `${name}: SFR 0x${sfrAddress.toString(16)} is 0x${actual.toString(16)}, expected 0x${expected.toString(16)} (PC=0x${pc.toString(16)})`,
+      `${name}: SFR values ${JSON.stringify(actual)} do not match ${JSON.stringify(checks)} (PC=0x${pc.toString(16)})`,
     );
   } finally {
     emu.emu_destroy(cpu);
   }
+}
+
+function cAsm(source, name) {
+  const translated = transpileCToAsm(source);
+  const errors = translated.diagnostics.filter((item) => item.level === "error");
+  assert.deepEqual(errors, [], `${name}: C errors\n${errors.map((item) => `${item.line ?? ""}: ${item.message}`).join("\n")}`);
+  return translated.asm;
 }
 
 function parseIntelHex(text) {

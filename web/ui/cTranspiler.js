@@ -3095,6 +3095,88 @@ function emitExprToWord(expr, ctx, line) {
         ctx.diagnostics.push({ level: "error", line, message: `Cannot determine sizeof(${sizeofMatch[1]}).` });
         return ["clr a", "mov b,#0x0"];
     }
+    // Handle an explicit scalar cast before checking for long operands.  Without
+    // this, a narrowing cast such as (unsigned char)longValue is sent to the
+    // 32-bit emitter, which quite correctly rejects the casted expression.
+    const leadingCast = peelLeadingScalarCasts(trimmed);
+    if (leadingCast.type) {
+        if (leadingCast.type.unsupportedReason) {
+            ctx.diagnostics.push({ level: "error", line, message: leadingCast.type.unsupportedReason });
+            return ["clr a", "mov b,#0x0"];
+        }
+        if (leadingCast.type.size !== 1)
+            return emitExprToWord(leadingCast.expression, ctx, line);
+        const out = emitExprToA(leadingCast.expression, ctx, line);
+        if (!leadingCast.type.signed)
+            return [...out, "mov b,#0x0"];
+        const positive = nextLabel(ctx, "cast_sign_positive");
+        const done = nextLabel(ctx, "cast_sign_done");
+        return [
+            ...out,
+            `jnb acc.7,${positive}`,
+            "mov b,#0xff",
+            `sjmp ${done}`,
+            `${positive}:`,
+            "mov b,#0x0",
+            `${done}:`,
+        ];
+    }
+    const preInc = /^(\+\+|--)([A-Za-z_]\w*)$/.exec(trimmed);
+    if (preInc) {
+        const name = preInc[2].toLowerCase();
+        const variable = resolveVariable(name, ctx);
+        const xdataVariable = resolveXdataVariable(name, ctx);
+        if (!variable && !xdataVariable) {
+            ctx.diagnostics.push({ level: "error", line, message: `Unknown variable ${preInc[2]} in ${preInc[1]} expression.` });
+            return ["clr a", "mov b,#0x0"];
+        }
+        const increment = xdataVariable
+            ? emitXdataVariableIncDec(xdataVariable, preInc[1], ctx, line)
+            : emitVariableIncDec(variable, preInc[1], ctx, line);
+        return [...increment, ...emitExprToWord(name, ctx, line)];
+    }
+    const postInc = /^([A-Za-z_]\w*)(\+\+|--)$/.exec(trimmed);
+    if (postInc) {
+        const name = postInc[1].toLowerCase();
+        const variable = resolveVariable(name, ctx);
+        const xdataVariable = resolveXdataVariable(name, ctx);
+        if (!variable && !xdataVariable) {
+            ctx.diagnostics.push({ level: "error", line, message: `Unknown variable ${postInc[1]} in ${postInc[2]} expression.` });
+            return ["clr a", "mov b,#0x0"];
+        }
+        const old = allocateWordTemp(ctx, "word_post_value", line);
+        const value = emitExprToWord(name, ctx, line);
+        const increment = xdataVariable
+            ? emitXdataVariableIncDec(xdataVariable, postInc[2], ctx, line)
+            : emitVariableIncDec(variable, postInc[2], ctx, line);
+        return [
+            ...value,
+            `mov ${variableTarget(old)},a`,
+            `mov ${variableTarget(old, 1)},b`,
+            ...increment,
+            `mov a,${variableTarget(old)}`,
+            `mov b,${variableTarget(old, 1)}`,
+        ];
+    }
+    // A comparison/logical expression is boolean-sized even when its operands
+    // are long; keep it out of the generic long-value path. Ternaries retain
+    // their branch width and are therefore emitted with the word emitter.
+    const wordTernary = findTopLevelTernary(trimmed);
+    if (wordTernary) {
+        const falseLabel = nextLabel(ctx, "word_ternary_false");
+        const doneLabel = nextLabel(ctx, "word_ternary_done");
+        return [
+            ...emitConditionFalseJump(wordTernary.condition, falseLabel, ctx, line),
+            ...emitExprToWord(wordTernary.whenTrue, ctx, line),
+            `sjmp ${doneLabel}`,
+            `${falseLabel}:`,
+            ...emitExprToWord(wordTernary.whenFalse, ctx, line),
+            `${doneLabel}:`,
+        ];
+    }
+    if (findTopLevelBinaryOperator(trimmed, ["||", "&&"]) || findComparator(trimmed) || trimmed.startsWith("!")) {
+        return [...emitBooleanExprToA(trimmed, ctx, line), "mov b,#0x0"];
+    }
     if (referencesLongValue(trimmed, ctx)) {
         const code = emitExprToLong(trimmed, ctx, line);
         const result = ensureVar(ctx, "__long_result", line, 4);
@@ -3206,22 +3288,6 @@ function emitExprToWord(expr, ctx, line) {
             out.push("mov b,#0x0");
         return out;
     }
-    const ternary = findTopLevelTernary(trimmed);
-    if (ternary) {
-        const falseLabel = nextLabel(ctx, "word_ternary_false");
-        const doneLabel = nextLabel(ctx, "word_ternary_done");
-        return [
-            ...emitConditionFalseJump(ternary.condition, falseLabel, ctx, line),
-            ...emitExprToWord(ternary.whenTrue, ctx, line),
-            `sjmp ${doneLabel}`,
-            `${falseLabel}:`,
-            ...emitExprToWord(ternary.whenFalse, ctx, line),
-            `${doneLabel}:`,
-        ];
-    }
-    if (findTopLevelBinaryOperator(trimmed, ["||", "&&"]) || findComparator(trimmed) || trimmed.startsWith("!")) {
-        return [...emitBooleanExprToA(trimmed, ctx, line), "mov b,#0x0"];
-    }
     if (trimmed.startsWith("~")) {
         return [...emitExprToWord(trimmed.slice(1), ctx, line), "cpl a", "xch a,b", "cpl a", "xch a,b"];
     }
@@ -3255,35 +3321,14 @@ function emitExprToWord(expr, ctx, line) {
         if (!found)
             continue;
         if (found.op === "*" || found.op === "/" || found.op === "%") {
-            const out = emitMulDivToA(found.left, found.op, found.right, ctx, line);
-            if (found.op !== "*")
-                out.push("mov b,#0x0");
-            return out;
+            // Promote multi-byte arithmetic to the existing 32-bit backend.  The
+            // old byte-only lowering silently discarded the high byte of word
+            // operands (e.g. 300 / 2 became 44 / 2).
+            const out = emitExprToLong(trimmed, ctx, line);
+            const result = ensureVar(ctx, "__long_result", line, 4);
+            return [...out, `mov a,${variableTarget(result)}`, `mov b,${variableTarget(result, 1)}`];
         }
         return emitWordBinary(found.left, found.op, found.right, ctx, line);
-    }
-    const cast = peelLeadingScalarCasts(trimmed);
-    if (cast.type) {
-        if (cast.type.unsupportedReason) {
-            ctx.diagnostics.push({ level: "error", line, message: cast.type.unsupportedReason });
-            return ["clr a", "mov b,#0x0"];
-        }
-        if (cast.type.size !== 1)
-            return emitExprToWord(cast.expression, ctx, line);
-        const out = emitExprToA(cast.expression, ctx, line);
-        if (!cast.type.signed)
-            return [...out, "mov b,#0x0"];
-        const positive = nextLabel(ctx, "cast_sign_positive");
-        const done = nextLabel(ctx, "cast_sign_done");
-        return [
-            ...out,
-            `jnb acc.7,${positive}`,
-            "mov b,#0xff",
-            `sjmp ${done}`,
-            `${positive}:`,
-            "mov b,#0x0",
-            `${done}:`,
-        ];
     }
     const bitName = resolveVariable(trimmed.toLowerCase(), ctx) ? undefined : ctx.sbitMap.get(trimmed.toLowerCase());
     if (bitName)
@@ -3491,11 +3536,20 @@ function emitExprToA(expr, ctx, line) {
         ctx.diagnostics.push({ level: "error", line, message: `Cannot determine sizeof(${sizeofMatch[1]}).` });
         return ["clr a"];
     }
-    if (referencesLongValue(trimmed, ctx) && !isFloatExpression(trimmed, ctx)) {
-        const code = emitExprToLong(trimmed, ctx, line);
-        const result = ensureVar(ctx, "__long_result", line, 4);
-        return [...code, `mov a,${variableTarget(result)}`];
+    // Apply explicit scalar casts before long-expression dispatch so narrowing
+    // casts can use the low byte of a long value instead of being rejected by
+    // the 32-bit emitter.
+    const leadingCast = peelLeadingScalarCasts(trimmed);
+    if (leadingCast.type) {
+        if (leadingCast.type.unsupportedReason) {
+            ctx.diagnostics.push({ level: "error", line, message: leadingCast.type.unsupportedReason });
+            return ["clr a"];
+        }
+        return emitExprToA(leadingCast.expression, ctx, line);
     }
+    // Comparisons, logical expressions and ternaries produce a byte/boolean
+    // result even when they mention a long variable. Handle them before the
+    // generic long-value dispatch below.
     const ternary = findTopLevelTernary(trimmed);
     if (ternary) {
         const falseLabel = nextLabel(ctx, "ternary_false");
@@ -3509,8 +3563,13 @@ function emitExprToA(expr, ctx, line) {
             `${endLabel}:`,
         ];
     }
-    if (findTopLevelBinaryOperator(trimmed, ["||", "&&"]) || findComparator(trimmed)) {
+    if (findTopLevelBinaryOperator(trimmed, ["||", "&&"]) || findComparator(trimmed) || trimmed.startsWith("!")) {
         return emitBooleanExprToA(trimmed, ctx, line);
+    }
+    if (referencesLongValue(trimmed, ctx) && !isFloatExpression(trimmed, ctx)) {
+        const code = emitExprToLong(trimmed, ctx, line);
+        const result = ensureVar(ctx, "__long_result", line, 4);
+        return [...code, `mov a,${variableTarget(result)}`];
     }
     const rotate8 = /^_(crol|cror)_\s*\(([\s\S]*)\)$/i.exec(trimmed);
     if (rotate8) {
@@ -3648,17 +3707,16 @@ function emitExprToA(expr, ctx, line) {
         const found = findTopLevelBinaryOperator(trimmed, ops);
         if (!found)
             continue;
-        if (found.op === "*" || found.op === "/" || found.op === "%")
+        if (found.op === "*" || found.op === "/" || found.op === "%") {
+            const wideOperand = switchExpressionSize(found.left, ctx) > 1 || switchExpressionSize(found.right, ctx) > 1;
+            if (found.op !== "*" || wideOperand) {
+                const out = emitExprToLong(trimmed, ctx, line);
+                const result = ensureVar(ctx, "__long_result", line, 4);
+                return [...out, `mov a,${variableTarget(result)}`];
+            }
             return emitMulDivToA(found.left, found.op, found.right, ctx, line);
-        return [...emitExprToA(found.left, ctx, line), ...emitApplyBinaryToA(found.op, found.right, ctx, line)];
-    }
-    const cast = peelLeadingScalarCasts(trimmed);
-    if (cast.type) {
-        if (cast.type.unsupportedReason) {
-            ctx.diagnostics.push({ level: "error", line, message: cast.type.unsupportedReason });
-            return ["clr a"];
         }
-        return emitExprToA(cast.expression, ctx, line);
+        return [...emitExprToA(found.left, ctx, line), ...emitApplyBinaryToA(found.op, found.right, ctx, line)];
     }
     const target = resolveTarget(trimmed.toLowerCase(), ctx);
     if (target)
@@ -4048,6 +4106,23 @@ function emitConditionFalseJump(cond, falseLabel, ctx, line) {
                 out.push(`${okLabel}:`);
                 return out;
         }
+    }
+    // A multi-byte scalar is true when any of its bytes is non-zero. Checking
+    // only A (the low byte) made values such as 0x0100 incorrectly false in
+    // conditions and in the left side of a logical &&/|| expression.
+    if (referencesLongValue(text, ctx) && !isFloatExpression(text, ctx)) {
+        const value = ensureVar(ctx, "__long_condition_value", line, 4);
+        const nonzero = nextLabel(ctx, "long_condition_nonzero");
+        const out = [...emitExprToLong(text, ctx, line), ...copyScalarBytes(value, ensureVar(ctx, "__long_result", line, 4), 4)];
+        for (let index = 0; index < 4; index++)
+            out.push(`mov a,${variableTarget(value, index)}`, `jnz ${nonzero}`);
+        out.push(`sjmp ${falseLabel}`, `${nonzero}:`);
+        return out;
+    }
+    if (switchExpressionSize(text, ctx) > 1) {
+        const nonzero = nextLabel(ctx, "word_condition_nonzero");
+        const out = [...emitExprToWord(text, ctx, line), "jnz " + nonzero, "mov a,b", `jnz ${nonzero}`, `sjmp ${falseLabel}`, `${nonzero}:`];
+        return out;
     }
     const bitwise = /^([A-Za-z_]\w*)\s*&\s*([\s\S]+)$/.exec(text);
     if (bitwise) {
@@ -5919,6 +5994,11 @@ function findTopLevelBinaryOperator(text, operators) {
             if (op === "<" && (text[start - 1] === "<" || text[i + 1] === "<" || text[i + 1] === "="))
                 continue;
             if (op === ">" && (text[start - 1] === ">" || text[i + 1] === ">" || text[i + 1] === "="))
+                continue;
+            // `->` is the C structure-pointer member operator, not a comparison.
+            // Treating its `>` as a comparator splits `pointer->value` into the
+            // invalid operands `pointer-` and `value`.
+            if (op === ">" && text[start - 1] === "-")
                 continue;
             const left = text.slice(0, start).trim();
             const right = text.slice(i + 1).trim();

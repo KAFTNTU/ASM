@@ -1108,6 +1108,12 @@ function estimateDbSize(operands) {
     }
     return size;
 }
+function isByteDataValue(value) {
+    return Number.isInteger(value) && value >= -0x80 && value <= 0xff;
+}
+function isWordDataValue(value) {
+    return Number.isInteger(value) && value >= -0x8000 && value <= 0xffff;
+}
 function estimateSize(mnemonic, operands, equ) {
     const arg0 = resolveAliasToken(operands[0]?.trim().toLowerCase() ?? "", equ);
     const arg1 = resolveAliasToken(operands[1]?.trim().toLowerCase() ?? "", equ);
@@ -1234,6 +1240,8 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
             const value = resolveValue(operand, labels, equ, entry.address);
             if (value == null)
                 return failEarly(`Cannot resolve DB value: ${operand}`);
+            if (!isByteDataValue(value))
+                return failEarly(`DB value is outside the byte range (-128..255): ${operand}`);
             bytes.push(value & 0xff);
         }
         return bytes;
@@ -1244,6 +1252,8 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
             const value = resolveValue(operand, labels, equ, entry.address);
             if (value == null)
                 return failEarly(`Cannot resolve DW value: ${operand}`);
+            if (!isWordDataValue(value))
+                return failEarly(`DW value is outside the word range (-32768..65535): ${operand}`);
             bytes.push((value >> 8) & 0xff, value & 0xff);
         }
         return bytes;
@@ -1267,6 +1277,39 @@ function encodeInstruction(entry, labels, equ, diagnostics) {
             message: `Cannot resolve operands for ${entry.mnemonic}.`,
         });
         return null;
+    }
+    for (let index = 0; index < ops.length; index++) {
+        const operand = ops[index];
+        if ((operand.type === "direct" || operand.type === "bit" || operand.type === "nbit") &&
+            (!Number.isInteger(operand.value) || operand.value < 0 || operand.value > 0xff)) {
+            diagnostics.push({
+                level: "error",
+                line: entry.line,
+                message: `${operand.type === "direct" ? "Direct" : "Bit"} address is outside 0..255: ${entry.operands[index]}.`,
+            });
+            return null;
+        }
+        if (operand.type === "addr" &&
+            (!Number.isInteger(operand.value) || operand.value < 0 || operand.value > 0xffff)) {
+            diagnostics.push({
+                level: "error",
+                line: entry.line,
+                message: `Code address is outside 0..65535: ${entry.operands[index]}.`,
+            });
+            return null;
+        }
+        if (operand.type === "imm") {
+            const isDptrImmediate = entry.mnemonic === "mov" && index === 1 && ops[0]?.type === "dptr";
+            const valid = isDptrImmediate ? isWordDataValue(operand.value) : isByteDataValue(operand.value);
+            if (!valid) {
+                diagnostics.push({
+                    level: "error",
+                    line: entry.line,
+                    message: `${isDptrImmediate ? "16-bit" : "8-bit"} immediate is outside ${isDptrImmediate ? "-32768..65535" : "-128..255"}: ${entry.operands[index]}.`,
+                });
+                return null;
+            }
+        }
     }
     const fail = (message) => {
         diagnostics.push({ level: "error", line: entry.line, message });
@@ -1712,7 +1755,10 @@ function parseOperand(operand, labels, equ, hint = "any", currentAddress = 0) {
         return { type: "unknown" };
     if (raw.startsWith("#")) {
         const value = resolveValue(raw.slice(1), labels, equ, currentAddress);
-        return value == null ? { type: "unknown" } : { type: "imm", value: value & 0xffff };
+        // Keep the signed/full-width value until instruction encoding validates
+        // the operand width. Masking here would make #256 indistinguishable from
+        // #0 and hide out-of-range immediates from diagnostics.
+        return value == null ? { type: "unknown" } : { type: "imm", value };
     }
     const lower = raw.toLowerCase();
     if (lower === "a" || lower === "acc")
@@ -1762,10 +1808,10 @@ function parseOperand(operand, labels, equ, hint = "any", currentAddress = 0) {
             if (hint === "immediate")
                 return { type: "imm", value: resolvedNumber & 0xffff };
             if (hint === "bit")
-                return { type: "bit", value: resolvedNumber & 0xff };
+                return { type: "bit", value: resolvedNumber };
             if (hint === "address")
-                return { type: "addr", value: resolvedNumber & 0xffff };
-            return { type: "direct", value: resolvedNumber & 0xff };
+                return { type: "addr", value: resolvedNumber };
+            return { type: "direct", value: resolvedNumber };
         }
         const resolvedAlias = resolveAliasToken(lower, equ);
         if (resolvedAlias !== lower) {
@@ -1787,12 +1833,12 @@ function parseOperand(operand, labels, equ, hint = "any", currentAddress = 0) {
             return { type: "imm", value: resolvedNumber & 0xffff };
         }
         if (hint === "bit") {
-            return { type: "bit", value: resolvedNumber & 0xff };
+            return { type: "bit", value: resolvedNumber };
         }
         if (hint === "address") {
-            return { type: "addr", value: resolvedNumber & 0xffff };
+            return { type: "addr", value: resolvedNumber };
         }
-        return { type: "direct", value: resolvedNumber & 0xff };
+        return { type: "direct", value: resolvedNumber };
     }
     const resolvedAlias = resolveAliasToken(lower, equ);
     if (resolvedAlias !== lower) {
