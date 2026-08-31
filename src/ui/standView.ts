@@ -1,4 +1,5 @@
 import { EmuBoardController } from "../vm/emuBoardController";
+import { flashAduc841, isAduc841SerialSupported } from "../vm/aduc841Serial";
 import { SFR } from "../vm/st841Map";
 import { compileAsm } from "./asmCompiler";
 import { checkC } from "./cChecker";
@@ -257,7 +258,10 @@ export function renderStand(params) {
     const projectGroup = el("div", { class: "toolbarGroup projectGroup" });
     projectGroup.append(fileNameInput, modeSelect, fileMenuWrap);
     const toolsGroup = el("div", { class: "toolbarGroup toolsGroup" });
-    toolsGroup.append(traceBtn, oscilloscopeBtn, logicEditorBtn);
+    const flashBtn = button("↥", "flashControl");
+    flashBtn.title = "Flash ADuC841";
+    flashBtn.setAttribute("aria-label", "Flash ADuC841");
+    toolsGroup.append(flashBtn, traceBtn, oscilloscopeBtn, logicEditorBtn);
     toolbar.append(runGroup, projectGroup, toolsGroup, speedGroup, themeBtn, languageBtn, fullscreenBtn);
     syncThemeButton();
     windowCard.appendChild(toolbar);
@@ -961,6 +965,35 @@ export function renderStand(params) {
     logicEditorBtn.addEventListener("click", () => {
         logicEditor.open();
     });
+    flashBtn.addEventListener("click", async () => {
+        if (!isAduc841SerialSupported()) {
+            statusStrip.innerHTML = `<span class="statusErrorLabel">Web Serial is unavailable. Use Chrome or Edge on localhost/HTTPS.</span>`;
+            return;
+        }
+        const result = compileAndRender(true);
+        if (!result.ok || !result.hex.trim()) return;
+        flashBtn.disabled = true;
+        flashBtn.textContent = "…";
+        statusStrip.textContent = "Connect ADuC841: JP6=Programming, SW8=USB, then press RESET.";
+        try {
+            await flashAduc841(result.hex, {
+                baudRate: 9600,
+                runAfter: true,
+                onProgress: (written, total) => {
+                    statusStrip.textContent = `Flashing ADuC841… ${Math.round((written / Math.max(1, total)) * 100)}%`;
+                },
+            });
+            statusStrip.textContent = "ADuC841 programmed successfully.";
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            statusStrip.innerHTML = `<span class="statusErrorLabel">Flash error: ${escapeHtml(message)}</span>`;
+        }
+        finally {
+            flashBtn.disabled = false;
+            flashBtn.textContent = "↥";
+        }
+    });
     fullscreenBtn.addEventListener("click", () => {
         toggleSimulatorFullscreen();
     });
@@ -1379,6 +1412,8 @@ export function renderStand(params) {
         traceBtn.textContent = t("runner");
         oscilloscopeBtn.textContent = t("oscilloscope");
         logicEditorBtn.textContent = t("logicCircuits");
+        flashBtn.title = "Flash ADuC841";
+        flashBtn.setAttribute("aria-label", "Flash ADuC841");
         fileNameInput.title = t("fileName");
         fileMenuBtn.textContent = t("file");
         openFileBtn.textContent = t("openFile");
