@@ -9,6 +9,7 @@ export function createLogicEditor(options) {
     const adapter = createBoardLogicAdapter(options.board);
     let project = restoreProject();
     let currentCircuitId = project.rootCircuitId;
+    let animationHandle = 0;
     let selectedId = null;
     let selectedWireId = null;
     let selectedComponentIds = new Set();
@@ -196,7 +197,7 @@ export function createLogicEditor(options) {
     svg.addEventListener("contextmenu", onCanvasContextMenu);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("fullscreenchange", updateFullscreenButton);
-    document.addEventListener("click", (event) => {
+    const onDocumentClick = (event) => {
         if (wireColorPopover && !wireColorPopover.contains(event.target))
             closeWireColorPopover();
         if (!propertiesPopover.classList.contains("hidden") && !propertiesPopover.contains(event.target))
@@ -204,7 +205,8 @@ export function createLogicEditor(options) {
         if (!dropdown.contains(event.target) && event.target !== fileButton && event.target !== editButton && event.target !== viewButton) {
             closeDropdown();
         }
-    });
+    };
+    document.addEventListener("click", onDocumentClick);
     function openEditor() {
         open = true;
         modal.classList.remove("hidden");
@@ -212,15 +214,23 @@ export function createLogicEditor(options) {
         syncRunButton();
         renderAll();
         svg.focus();
+        scheduleTick();
     }
     function closeEditor() {
         open = false;
+        running = false;
+        adapter.releaseAll();
+        if (animationHandle !== 0) {
+            window.cancelAnimationFrame(animationHandle);
+            animationHandle = 0;
+        }
         modal.classList.add("hidden");
         pendingWire = null;
         clearPinHover();
         closeWireColorPopover();
         closePropertiesPopover();
         persistProject();
+        syncRunButton();
         if (document.fullscreenElement === modal)
             void document.exitFullscreen();
     }
@@ -1670,9 +1680,14 @@ export function createLogicEditor(options) {
                 lastClockTime = now;
             }
         }
-        window.requestAnimationFrame(tick);
+        animationHandle = 0;
+        if (open)
+            scheduleTick();
     }
-    window.requestAnimationFrame(tick);
+    function scheduleTick() {
+        if (animationHandle === 0 && open)
+            animationHandle = window.requestAnimationFrame(tick);
+    }
     function showTruthTable() {
         const circuit = currentCircuit();
         const inputs = circuit.components.filter((item) => item.kind === "SWITCH");
@@ -2243,7 +2258,19 @@ export function createLogicEditor(options) {
         dialogLayer.classList.add("hidden");
         dialogLayer.innerHTML = "";
     }
-    return { element: modal, open: openEditor, close: closeEditor };
+    function destroy() {
+        // The clock loop reschedules itself forever; without this the editor keeps
+        // evaluating circuits (and holding the whole project graph) after teardown.
+        if (animationHandle !== 0) {
+            window.cancelAnimationFrame(animationHandle);
+            animationHandle = 0;
+        }
+        document.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("fullscreenchange", updateFullscreenButton);
+        document.removeEventListener("click", onDocumentClick);
+        closeEditor();
+    }
+    return { element: modal, open: openEditor, close: closeEditor, destroy };
 }
 function restoreProject() {
     try {

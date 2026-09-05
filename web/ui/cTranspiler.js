@@ -7,6 +7,22 @@ const C_MEMORY_QUALIFIER_SOURCE = "(?:code|data|idata|xdata|pdata|bdata|far)";
 const C_DECLARATION_RE = new RegExp(`^((?:(?:${C_TYPE_QUALIFIER_SOURCE}|${C_SCALAR_TYPE_SOURCE})\\s+)+)([\\s\\S]+)$`, "i");
 const ARG_BASE = 0x20;
 const MAX_ARGS = 8;
+// Scratch block reserved at the top of IRAM for the 16-bit runtime helpers.
+// It sits above the user allocation limit so helper calls can never collide
+// with compiler-allocated locals, temporaries or parameters.
+const HELPER_BASE = 0x78;
+const HELPER_ML = HELPER_BASE + 0; // 0x78 multiplicand / dividend / result low
+const HELPER_MH = HELPER_BASE + 1; // 0x79 ... high
+const HELPER_NL = HELPER_BASE + 2; // 0x7A multiplier / divisor low
+const HELPER_NH = HELPER_BASE + 3; // 0x7B ... high
+const HELPER_RL = HELPER_BASE + 4; // 0x7C accumulator / remainder low
+const HELPER_RH = HELPER_BASE + 5; // 0x7D ... high
+const HELPER_CNT = HELPER_BASE + 6; // 0x7E loop counter
+const HELPER_SIGN = HELPER_BASE + 7; // 0x7F sign bookkeeping
+// Locals may use IRAM up to 0x80. The helper scratch block at 0x78..0x7F is
+// only carved out when a program actually calls a 16-bit helper, which is
+// checked once after code generation (see the collision check below).
+const IRAM_USER_LIMIT = 0x80;
 const XDATA_BASE = 0x0000;
 const XDATA_LIMIT = 0x0800; // ADuC841 on-chip XRAM: 2 KiB.
 export function transpileCToAsm(source) {
@@ -30,12 +46,16 @@ export function transpileCToAsm(source) {
     }
     const emitted = [];
     let needDelay = false;
+    const needHelpers = new Set();
     const labelCounter = { value: 0 };
     const nextVarAddr = { value: 0x30 };
     const nextXdataAddr = { value: XDATA_BASE };
     const globals = parseGlobalScalars(text, functions, arrays, structDefs, nextVarAddr, nextXdataAddr, diagnostics);
     allocateFunctionParams(functions, structDefs, nextVarAddr, diagnostics);
     const returnSlots = allocateFunctionReturnSlots(functions, nextVarAddr, diagnostics);
+    // Functions have no stack frames, so recursion and main/ISR sharing silently
+    // corrupt data. Report both before generating code.
+    diagnoseCallGraph(functions, diagnostics);
     for (const [name, value] of sfrMap)
         emitted.push(`${name} data ${value}`);
     if (sfrMap.size)
@@ -61,6 +81,11 @@ export function transpileCToAsm(source) {
         emitted.push(`org ${toAsmByte(vector)}`, `ljmp ${fn.name}`, "");
     }
     emitted.push("org 0x0060", "__c_start:");
+    // Placeholder; patched below once the final variable high-water mark is
+    // known. After reset SP is 0x07, so without this the first CALL would push
+    // straight over register bank 1 and then the variables allocated from 0x30.
+    const stackInitIndex = emitted.length;
+    emitted.push("mov sp,#0x07");
     emitted.push(...globals.initCode);
     emitted.push("lcall main", "__c_halt:", "sjmp __c_halt", "");
     const orderedFunctions = Array.from(functions.values()).sort((a, b) => a.order - b.order);
@@ -105,6 +130,7 @@ export function transpileCToAsm(source) {
             nextXdataAddr,
             labelCounter,
             floatScratchDepth: 0,
+            needHelpers,
         };
         bindFunctionParams(fn, fnCtx, diagnostics);
         const statements = splitStatements(fn.body);
@@ -126,6 +152,36 @@ export function transpileCToAsm(source) {
         }
         emitted.push("");
     }
+    // The 16-bit helpers own a fixed scratch block at the top of IRAM. Only
+    // programs that actually call them lose those bytes, so report the clash
+    // here rather than shrinking the budget for every program.
+    if (needHelpers.size && nextVarAddr.value > HELPER_BASE) {
+        diagnostics.push({
+            level: "error",
+            message: `16-bit multiply/divide needs IRAM ${toAsmByte(HELPER_BASE)}..0x7F as scratch, but variables already reach ${toAsmByte(nextVarAddr.value - 1)}. Move data to xdata or use 8-bit types.`,
+        });
+    }
+    // Now that every variable, parameter and temporary has an address, place the
+    // stack immediately above them. SP points at the last used byte, so the first
+    // push writes to stackBase. IRAM above 0x7F is indirect-only, which is exactly
+    // how PUSH/POP address it, so the stack may extend into it.
+    {
+        const helperTop = needHelpers.size ? HELPER_BASE + 8 : 0;
+        const stackBase = Math.max(0x30, nextVarAddr.value, helperTop);
+        if (stackBase > 0xff) {
+            diagnostics.push({ level: "error", message: "No internal RAM left for the stack; move data to xdata." });
+        }
+        else {
+            emitted[stackInitIndex] = `mov sp,#${toAsmByte(stackBase - 1)}`;
+            if (stackBase > 0xe0) {
+                diagnostics.push({
+                    level: "warning",
+                    message: `Only ${0x100 - stackBase} bytes of stack remain above ${toAsmByte(stackBase)}; deep call nesting or interrupts may overflow it.`,
+                });
+            }
+        }
+    }
+    emitted.push(...emitHelperRoutines(needHelpers));
     if (needDelay && !functions.has("delay")) {
         emitted.push("delay:", "mov r3,#25", "d3:", "mov r2,#255", "d2:", "mov r1,#255", "d1:", "djnz r1,d1", "djnz r2,d2", "djnz r3,d3", "ret", "");
     }
@@ -148,6 +204,28 @@ function transpileStatement(statement, lineOffset, ctx) {
     if (!raw)
         return { code: [], needDelay: false, needWrite: false };
     const line = lineOffset + statement.line;
+    // The C null statement. `;` on its own (or a run of them) generates nothing;
+    // previously it fell through to "C line not translated".
+    if (/^;+$/.test(raw))
+        return { code: [], needDelay: false, needWrite: false };
+    // A bare compound statement `{ ... }`. C scopes it, but since this backend
+    // allocates every local at a fixed address the practical effect is to run the
+    // inner statements in order. Names still resolve to the enclosing function's
+    // variables, so a shadowing redeclaration is rejected by the usual duplicate
+    // handling rather than silently aliasing.
+    if (raw.startsWith("{") && raw.endsWith("}")) {
+        const inner = raw.slice(1, -1);
+        const code = [];
+        let needDelay = false;
+        let needWrite = false;
+        for (const nested of splitStatements(inner)) {
+            const chunk = transpileStatement({ text: nested.text, line: statement.line + nested.line - 1 }, lineOffset, ctx);
+            code.push(...chunk.code);
+            needDelay || (needDelay = chunk.needDelay);
+            needWrite || (needWrite = chunk.needWrite);
+        }
+        return { code, needDelay, needWrite };
+    }
     if (/^sbit\b/i.test(raw) || /^sfr(?:16)?\b/i.test(raw)) {
         return { code: [], needDelay: false, needWrite: false };
     }
@@ -1707,8 +1785,11 @@ function scalarTypeInfo(raw) {
     }
     if (/\bshort\b/.test(header))
         return { size: 2, signed: !/\bunsigned\b/.test(header), category: "integer" };
+    // Plain `int` is signed in C; only an explicit `unsigned` makes it otherwise.
+    // The old test required the `signed` keyword, so `int a = -10;` behaved as
+    // unsigned and picked the wrong division/comparison lowering.
     if (/\bint\b/.test(header))
-        return { size: 2, signed: /\bsigned\b/.test(header) && !/\bunsigned\b/.test(header), category: "integer" };
+        return { size: 2, signed: !/\bunsigned\b/.test(header), category: "integer" };
     if (/\blong\b/.test(header)) {
         return { size: 4, signed: !/\bunsigned\b/.test(header), category: "integer" };
     }
@@ -1754,7 +1835,10 @@ function unsupportedObjectSpace(space) {
 function peelLeadingScalarCasts(raw) {
     let expression = trimOuter(raw.trim());
     let outerType = null;
-    for (let guard = 0; guard < 8 && expression.startsWith("("); guard++) {
+    // Peel one cast at a time.  Keeping nested casts in `expression` is
+    // important for `(unsigned int)(unsigned char)(value)`: the inner cast must
+    // zero-extend/truncate before the outer 16-bit cast is applied.
+    for (let guard = 0; guard < 1 && expression.startsWith("("); guard++) {
         const close = findMatchingParenLike(expression, 0, "(", ")");
         if (close <= 0 || close >= expression.length - 1)
             break;
@@ -1765,8 +1849,19 @@ function peelLeadingScalarCasts(raw) {
         if (!declaration || declaration.declarators !== "__c_cast_value")
             break;
         const type = scalarTypeInfo(declaration.header);
+        // A C cast applies to the next unary expression, not to everything that
+        // follows it.  Keep `(unsigned int)a / b` intact so the binary parser can
+        // see the casted left operand; only peel the cast when its operand is
+        // unambiguously the whole remainder (`(type)(expr)`) or a single atom.
+        const remainder = expression.slice(close + 1).trim();
+        if (remainder && findTopLevelBinaryOperator(remainder, [
+            "||", "&&", "==", "!=", "<=", ">=", "<<", ">>", "|", "^", "&", "+", "-", "*", "/", "%", "<", ">",
+        ])) {
+            if (!remainder.startsWith("(") || !isWrapped(remainder))
+                break;
+        }
         outerType ?? (outerType = type);
-        expression = trimOuter(expression.slice(close + 1).trim());
+        expression = trimOuter(remainder);
     }
     return { expression, type: outerType };
 }
@@ -1818,7 +1913,7 @@ function parseGlobalScalars(source, functions, codeArrays, structDefs, nextVarAd
                     const size = pointerStorageSize(kind);
                     const addr = nextVarAddr.value;
                     nextVarAddr.value += size;
-                    if (nextVarAddr.value > 0x80)
+                    if (nextVarAddr.value > IRAM_USER_LIMIT)
                         diagnostics.push({ level: "error", message: `Global pointer ${name} exceeds internal RAM 0x30..0x7F.` });
                     vars.set(name, { name, addr, size, signed: false });
                     pointerVars.set(name, kind);
@@ -1854,7 +1949,7 @@ function parseGlobalScalars(source, functions, codeArrays, structDefs, nextVarAd
                     : nextVarAddr.value;
                 if (storage === "ram") {
                     nextVarAddr.value += total;
-                    if (nextVarAddr.value > 0x80)
+                    if (nextVarAddr.value > IRAM_USER_LIMIT)
                         diagnostics.push({ level: "error", message: `Global structure ${name} exceeds internal RAM 0x30..0x7F.` });
                 }
                 structVars.set(name, { name, structName: structDeclaration.structName, baseAddr, storage, elementCount: count, isConst: structDeclaration.isConst });
@@ -1886,7 +1981,7 @@ function parseGlobalScalars(source, functions, codeArrays, structDefs, nextVarAd
                 const size = pointerStorageSize(kind);
                 const addr = nextVarAddr.value;
                 nextVarAddr.value += size;
-                if (nextVarAddr.value > 0x80)
+                if (nextVarAddr.value > IRAM_USER_LIMIT)
                     diagnostics.push({ level: "error", message: `Global pointer ${name} exceeds internal RAM 0x30..0x7F.` });
                 vars.set(name, { name, addr, size, signed: false });
                 pointerVars.set(name, kind);
@@ -1947,7 +2042,7 @@ function parseGlobalScalars(source, functions, codeArrays, structDefs, nextVarAd
                 else {
                     const baseAddr = nextVarAddr.value;
                     nextVarAddr.value += total;
-                    if (nextVarAddr.value > 0x80)
+                    if (nextVarAddr.value > IRAM_USER_LIMIT)
                         diagnostics.push({ level: "error", message: `Global array ${name} exceeds internal RAM 0x30..0x7F.` });
                     ramArrays.set(name, { name, baseAddr, length: total, elementSize: declaration.size, elementCount: length });
                     for (let i = 0; i < total; i++)
@@ -1984,7 +2079,7 @@ function parseGlobalScalars(source, functions, codeArrays, structDefs, nextVarAd
             else {
                 const addr = nextVarAddr.value;
                 nextVarAddr.value += declaration.size;
-                if (nextVarAddr.value > 0x80)
+                if (nextVarAddr.value > IRAM_USER_LIMIT)
                     diagnostics.push({ level: "error", message: `Global variable ${name} exceeds internal RAM 0x30..0x7F.` });
                 const variable = { name, addr, size: declaration.size, isConst: declaration.isConst, signed: declaration.isSigned, category: scalarTypeInfo(declaration.header)?.category };
                 vars.set(name, variable);
@@ -3254,7 +3349,7 @@ function emitExprToWord(expr, ctx, line) {
         if (local?.elementSize && local.elementSize >= 2) {
             const constantIndex = tryEvalConst(wordArray[2]);
             if (constantIndex != null) {
-                const address = local.baseAddr + normalizedArrayOffset(constantIndex, local);
+                const address = local.baseAddr + normalizedArrayOffset(constantIndex, local, ctx, line);
                 return [`mov a,${toAsmByte(address)}`, `mov b,${toAsmByte(address + 1)}`];
             }
             return [...emitScaledIndexToA(wordArray[2], local.elementSize, ctx, line), `add a,#${toAsmByte8(local.baseAddr)}`, "mov r0,a", "mov a,@r0", "mov b,a", "inc r0", "mov a,@r0", "xch a,b"];
@@ -3321,12 +3416,9 @@ function emitExprToWord(expr, ctx, line) {
         if (!found)
             continue;
         if (found.op === "*" || found.op === "/" || found.op === "%") {
-            // Promote multi-byte arithmetic to the existing 32-bit backend.  The
-            // old byte-only lowering silently discarded the high byte of word
-            // operands (e.g. 300 / 2 became 44 / 2).
-            const out = emitExprToLong(trimmed, ctx, line);
-            const result = ensureVar(ctx, "__long_result", line, 4);
-            return [...out, `mov a,${variableTarget(result)}`, `mov b,${variableTarget(result, 1)}`];
+            // Full 16-bit multiply/divide/modulo. The old code path called the 8-bit
+            // emitMulDivToA here, which threw away the high byte of both operands.
+            return emitWordMulDiv(found.left, found.op, found.right, isSignedWordExpr(found.left, found.right, ctx), ctx, line);
         }
         return emitWordBinary(found.left, found.op, found.right, ctx, line);
     }
@@ -3357,6 +3449,420 @@ function emitRotateWord(expr, count, direction, ctx, line) {
     }
     out.push(`mov a,${variableTarget(value)}`, `mov b,${variableTarget(value, 1)}`);
     return out;
+}
+// ---------------------------------------------------------------------------
+// 16-bit runtime helpers.
+//
+// The original backend lowered every `*`, `/` and `%` to the 8-bit MUL AB /
+// DIV AB instructions, silently discarding the high byte of both operands and
+// treating signed values as unsigned. These routines implement true 16-bit
+// shift-and-add multiplication and restoring division, plus sign correction.
+//
+// Calling convention (all in the reserved 0x78..0x7F scratch block):
+//   input  : HELPER_ML/MH = left operand, HELPER_NL/NH = right operand
+//   output : HELPER_ML/MH = result (quotient for /, remainder for %)
+//   clobbers A, B, HELPER_RL/RH, HELPER_CNT, HELPER_SIGN
+// ---------------------------------------------------------------------------
+const HELPER_ROUTINES = {
+    __mul16: [
+        "__mul16:",
+        // result (RL:RH) = 0, counter = 16, shift-and-add over the multiplier.
+        `mov ${toAsmByte(HELPER_RL)},#0x0`,
+        `mov ${toAsmByte(HELPER_RH)},#0x0`,
+        `mov ${toAsmByte(HELPER_CNT)},#16`,
+        "__mul16_loop:",
+        // If bit 0 of the multiplier is set, add the multiplicand to the result.
+        `mov a,${toAsmByte(HELPER_NL)}`,
+        "jnb acc.0,__mul16_skip",
+        `mov a,${toAsmByte(HELPER_RL)}`,
+        `add a,${toAsmByte(HELPER_ML)}`,
+        `mov ${toAsmByte(HELPER_RL)},a`,
+        `mov a,${toAsmByte(HELPER_RH)}`,
+        `addc a,${toAsmByte(HELPER_MH)}`,
+        `mov ${toAsmByte(HELPER_RH)},a`,
+        "__mul16_skip:",
+        // multiplicand <<= 1
+        "clr c",
+        `mov a,${toAsmByte(HELPER_ML)}`,
+        "rlc a",
+        `mov ${toAsmByte(HELPER_ML)},a`,
+        `mov a,${toAsmByte(HELPER_MH)}`,
+        "rlc a",
+        `mov ${toAsmByte(HELPER_MH)},a`,
+        // multiplier >>= 1
+        "clr c",
+        `mov a,${toAsmByte(HELPER_NH)}`,
+        "rrc a",
+        `mov ${toAsmByte(HELPER_NH)},a`,
+        `mov a,${toAsmByte(HELPER_NL)}`,
+        "rrc a",
+        `mov ${toAsmByte(HELPER_NL)},a`,
+        `djnz ${toAsmByte(HELPER_CNT)},__mul16_loop`,
+        `mov a,${toAsmByte(HELPER_RL)}`,
+        `mov ${toAsmByte(HELPER_ML)},a`,
+        `mov a,${toAsmByte(HELPER_RH)}`,
+        `mov ${toAsmByte(HELPER_MH)},a`,
+        "ret",
+        "",
+    ],
+    __divmod16: [
+        "__divmod16:",
+        // Unsigned restoring division. Dividend ML:MH, divisor NL:NH.
+        // Quotient is shifted into ML:MH, remainder accumulates in RL:RH.
+        // Division by zero yields quotient 0xFFFF and remainder = dividend,
+        // matching the usual C51 library behaviour instead of hanging.
+        `mov a,${toAsmByte(HELPER_NL)}`,
+        `orl a,${toAsmByte(HELPER_NH)}`,
+        "jnz __divmod16_start",
+        `mov a,${toAsmByte(HELPER_ML)}`,
+        `mov ${toAsmByte(HELPER_RL)},a`,
+        `mov a,${toAsmByte(HELPER_MH)}`,
+        `mov ${toAsmByte(HELPER_RH)},a`,
+        `mov ${toAsmByte(HELPER_ML)},#0xff`,
+        `mov ${toAsmByte(HELPER_MH)},#0xff`,
+        "ret",
+        "__divmod16_start:",
+        `mov ${toAsmByte(HELPER_RL)},#0x0`,
+        `mov ${toAsmByte(HELPER_RH)},#0x0`,
+        `mov ${toAsmByte(HELPER_CNT)},#16`,
+        "__divmod16_loop:",
+        // remainder:dividend <<= 1 (32-bit shift through carry)
+        "clr c",
+        `mov a,${toAsmByte(HELPER_ML)}`,
+        "rlc a",
+        `mov ${toAsmByte(HELPER_ML)},a`,
+        `mov a,${toAsmByte(HELPER_MH)}`,
+        "rlc a",
+        `mov ${toAsmByte(HELPER_MH)},a`,
+        `mov a,${toAsmByte(HELPER_RL)}`,
+        "rlc a",
+        `mov ${toAsmByte(HELPER_RL)},a`,
+        `mov a,${toAsmByte(HELPER_RH)}`,
+        "rlc a",
+        `mov ${toAsmByte(HELPER_RH)},a`,
+        // trial subtract: remainder - divisor
+        `mov a,${toAsmByte(HELPER_RL)}`,
+        "clr c",
+        `subb a,${toAsmByte(HELPER_NL)}`,
+        "mov b,a",
+        `mov a,${toAsmByte(HELPER_RH)}`,
+        `subb a,${toAsmByte(HELPER_NH)}`,
+        // carry set means remainder < divisor, so restore (skip the subtraction)
+        "jc __divmod16_next",
+        `mov ${toAsmByte(HELPER_RH)},a`,
+        "mov a,b",
+        `mov ${toAsmByte(HELPER_RL)},a`,
+        // quotient bit 0 = 1
+        `mov a,${toAsmByte(HELPER_ML)}`,
+        "orl a,#0x1",
+        `mov ${toAsmByte(HELPER_ML)},a`,
+        "__divmod16_next:",
+        `djnz ${toAsmByte(HELPER_CNT)},__divmod16_loop`,
+        "ret",
+        "",
+    ],
+    __neg16m: [
+        // Two's-complement negate of ML:MH.
+        "__neg16m:",
+        `mov a,${toAsmByte(HELPER_ML)}`,
+        "cpl a",
+        "add a,#0x1",
+        `mov ${toAsmByte(HELPER_ML)},a`,
+        `mov a,${toAsmByte(HELPER_MH)}`,
+        "cpl a",
+        "addc a,#0x0",
+        `mov ${toAsmByte(HELPER_MH)},a`,
+        "ret",
+        "",
+    ],
+    __neg16n: [
+        // Two's-complement negate of NL:NH.
+        "__neg16n:",
+        `mov a,${toAsmByte(HELPER_NL)}`,
+        "cpl a",
+        "add a,#0x1",
+        `mov ${toAsmByte(HELPER_NL)},a`,
+        `mov a,${toAsmByte(HELPER_NH)}`,
+        "cpl a",
+        "addc a,#0x0",
+        `mov ${toAsmByte(HELPER_NH)},a`,
+        "ret",
+        "",
+    ],
+    __neg16r: [
+        // Two's-complement negate of RL:RH (used for signed remainder).
+        "__neg16r:",
+        `mov a,${toAsmByte(HELPER_RL)}`,
+        "cpl a",
+        "add a,#0x1",
+        `mov ${toAsmByte(HELPER_RL)},a`,
+        `mov a,${toAsmByte(HELPER_RH)}`,
+        "cpl a",
+        "addc a,#0x0",
+        `mov ${toAsmByte(HELPER_RH)},a`,
+        "ret",
+        "",
+    ],
+};
+/**
+ * Scan a function body for calls to other user functions.
+ * Purely lexical, which is enough for the subset this backend accepts.
+ */
+function collectCallees(body, functions) {
+    const found = new Set();
+    // Ignore anything inside string or character literals.
+    const cleaned = body.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/'(?:[^'\\]|\\.)*'/g, "''");
+    for (const match of cleaned.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)) {
+        const callee = match[1].toLowerCase();
+        if (functions.has(callee))
+            found.add(callee);
+    }
+    return found;
+}
+/**
+ * This backend gives every function a fixed set of IRAM addresses for its
+ * parameters, locals and temporaries; there are no stack frames. That makes two
+ * situations silently corrupt data, so both are reported here:
+ *
+ *  1. Recursion (direct or mutual) - the inner activation overwrites the outer
+ *     one's storage.
+ *  2. A function reachable from both main() and an interrupt handler - the ISR
+ *     preempts and clobbers the storage the interrupted call was using. The
+ *     prologue saves ACC/B/DPTR/PSW and the register bank, but cannot save the
+ *     compiler's fixed IRAM slots.
+ */
+function diagnoseCallGraph(functions, diagnostics) {
+    const callees = new Map();
+    for (const [name, fn] of functions)
+        callees.set(name, collectCallees(fn.body, functions));
+    // --- Recursion: depth-first search looking for a back edge. -------------
+    const state = new Map(); // 0 unvisited, 1 on stack, 2 done
+    const reported = new Set();
+    const path = [];
+    const visit = (name) => {
+        state.set(name, 1);
+        path.push(name);
+        for (const callee of callees.get(name) ?? []) {
+            const mark = state.get(callee) ?? 0;
+            if (mark === 1) {
+                const cycle = path.slice(path.indexOf(callee)).concat(callee);
+                const key = cycle.slice().sort().join(">");
+                if (!reported.has(key)) {
+                    reported.add(key);
+                    const fn = functions.get(callee);
+                    diagnostics.push({
+                        level: "error",
+                        line: fn?.lineOffset,
+                        message: cycle.length > 2
+                            ? `Mutual recursion is not supported (${cycle.join(" -> ")}); functions use fixed IRAM addresses, so the inner call would overwrite the outer one.`
+                            : `Recursive function ${callee}() is not supported; parameters and locals live at fixed IRAM addresses, so recursion would corrupt them.`,
+                    });
+                }
+            }
+            else if (mark === 0) {
+                visit(callee);
+            }
+        }
+        path.pop();
+        state.set(name, 2);
+    };
+    for (const name of functions.keys())
+        if ((state.get(name) ?? 0) === 0)
+            visit(name);
+    // --- Reentrancy: reachability from main() vs from each ISR. -------------
+    const reachable = (roots) => {
+        const seen = new Set();
+        const queue = [...roots];
+        while (queue.length) {
+            const current = queue.pop();
+            for (const callee of callees.get(current) ?? []) {
+                if (seen.has(callee))
+                    continue;
+                seen.add(callee);
+                queue.push(callee);
+            }
+        }
+        return seen;
+    };
+    const fromMain = functions.has("main") ? reachable(["main"]) : new Set();
+    const isrNames = Array.from(functions.values()).filter((fn) => fn.interruptNumber != null).map((fn) => fn.name.toLowerCase());
+    if (!isrNames.length)
+        return;
+    const shared = new Set();
+    for (const isr of isrNames) {
+        for (const callee of reachable([isr])) {
+            if (fromMain.has(callee))
+                shared.add(callee);
+        }
+    }
+    // Two different ISRs sharing a function is equally unsafe once nesting is on.
+    for (let i = 0; i < isrNames.length; i++) {
+        for (let j = i + 1; j < isrNames.length; j++) {
+            for (const callee of reachable([isrNames[i]])) {
+                if (reachable([isrNames[j]]).has(callee))
+                    shared.add(callee);
+            }
+        }
+    }
+    for (const name of shared) {
+        const fn = functions.get(name);
+        diagnostics.push({
+            level: "error",
+            line: fn?.lineOffset,
+            message: `${name}() is called from both main() and an interrupt handler, but functions are not reentrant: their parameters and locals occupy fixed IRAM addresses that the interrupt would overwrite. Duplicate the function or guard the call by clearing EA.`,
+        });
+    }
+}
+function emitHelperRoutines(needed) {
+    const out = [];
+    for (const name of Object.keys(HELPER_ROUTINES)) {
+        if (needed.has(name))
+            out.push(...HELPER_ROUTINES[name]);
+    }
+    return out;
+}
+/**
+ * Lower a 16-bit `*`, `/` or `%` to a call into the runtime helpers.
+ * Result is returned in A (low) and B (high), matching emitExprToWord.
+ */
+function emitWordMulDiv(left, op, right, signed, ctx, line) {
+    const lhs = allocateWordTemp(ctx, "muldiv_lhs", line);
+    const out = [
+        ...emitExprToWord(left, ctx, line),
+        `mov ${variableTarget(lhs)},a`,
+        `mov ${variableTarget(lhs, 1)},b`,
+        ...emitExprToWord(right, ctx, line),
+        `mov ${toAsmByte(HELPER_NL)},a`,
+        `mov ${toAsmByte(HELPER_NH)},b`,
+        `mov a,${variableTarget(lhs)}`,
+        `mov ${toAsmByte(HELPER_ML)},a`,
+        `mov a,${variableTarget(lhs, 1)}`,
+        `mov ${toAsmByte(HELPER_MH)},a`,
+    ];
+    if (op === "*") {
+        // Multiplication is sign-agnostic in two's complement for the low 16 bits.
+        ctx.needHelpers.add("__mul16");
+        out.push("lcall __mul16");
+    }
+    else if (!signed) {
+        ctx.needHelpers.add("__divmod16");
+        out.push("lcall __divmod16");
+    }
+    else {
+        // Signed division: work on magnitudes, then fix up the sign.
+        // C99 truncates toward zero, so the quotient sign is lhs^rhs and the
+        // remainder takes the sign of the dividend.
+        ctx.needHelpers.add("__divmod16");
+        ctx.needHelpers.add("__neg16m");
+        ctx.needHelpers.add("__neg16n");
+        if (op === "%")
+            ctx.needHelpers.add("__neg16r");
+        const lhsPositive = nextLabel(ctx, "sdiv_lhs_pos");
+        const rhsPositive = nextLabel(ctx, "sdiv_rhs_pos");
+        const noFixup = nextLabel(ctx, "sdiv_no_fixup");
+        // Dividend negative? remember it (bits 0 and 1) and negate.
+        // Divisor negative? flip the quotient-sign bit and negate.
+        // Bit 0 = negate quotient, bit 1 = negate remainder.
+        out.push(`mov ${toAsmByte(HELPER_SIGN)},#0x0`, `mov a,${toAsmByte(HELPER_MH)}`, `jnb acc.7,${lhsPositive}`, `mov ${toAsmByte(HELPER_SIGN)},#0x3`, "lcall __neg16m", `${lhsPositive}:`, `mov a,${toAsmByte(HELPER_NH)}`, `jnb acc.7,${rhsPositive}`, `mov a,${toAsmByte(HELPER_SIGN)}`, "xrl a,#0x1", `mov ${toAsmByte(HELPER_SIGN)},a`, "lcall __neg16n", `${rhsPositive}:`, "lcall __divmod16", `mov a,${toAsmByte(HELPER_SIGN)}`, op === "%" ? "jnb acc.1," + noFixup : "jnb acc.0," + noFixup, op === "%" ? "lcall __neg16r" : "lcall __neg16m", `${noFixup}:`);
+    }
+    if (op === "%") {
+        out.push(`mov a,${toAsmByte(HELPER_RL)}`, `mov b,${toAsmByte(HELPER_RH)}`);
+    }
+    else {
+        out.push(`mov a,${toAsmByte(HELPER_ML)}`, `mov b,${toAsmByte(HELPER_MH)}`);
+    }
+    return out;
+}
+/**
+ * True when an operand of `*`, `/` or `%` is wider than 8 bits, so the
+ * operation must be carried out at 16-bit precision even if the result is
+ * immediately narrowed.
+ */
+function isWideMulDivOperand(expr, ctx) {
+    if (switchExpressionSize(expr, ctx) > 1)
+        return true;
+    const trimmed = trimOuter(expr).toLowerCase();
+    const variable = resolveVariable(trimmed, ctx);
+    if (variable && variable.size >= 2)
+        return true;
+    if (ctx.sfr16Map.has(trimmed))
+        return true;
+    const constant = tryEvalConst(expr);
+    if (constant != null && (constant > 0xff || constant < -0x80))
+        return true;
+    return false;
+}
+/** True when either side of a binary expression is a signed 16-bit quantity. */
+function isSignedWordExpr(left, right, ctx) {
+    const inferred = inferIntegerExpressionType(left, ctx, inferIntegerExpressionType(right, ctx));
+    return inferred?.signed === true;
+}
+/**
+ * Infer the integer type of an expression well enough for C's usual arithmetic
+ * conversions.  This is intentionally separate from code generation: a word
+ * expression such as `(a + b) / (c + 0)` must retain the signedness of both
+ * nested additions, while `unsigned int / int` must remain unsigned.
+ */
+function inferIntegerExpressionType(expression, ctx, fallback = null) {
+    const text = trimOuter(expression.trim());
+    if (!text)
+        return fallback;
+    const cast = peelLeadingScalarCasts(text);
+    if (cast.type?.category === "integer")
+        return cast.type;
+    if (cast.type?.category === "floating")
+        return null;
+    const variable = resolveVariable(text.toLowerCase(), ctx) ?? resolveXdataVariable(text.toLowerCase(), ctx);
+    if (variable && variable.category !== "floating") {
+        return { size: variable.size, signed: variable.signed !== false, category: "integer" };
+    }
+    if (ctx.sfr16Map.has(text.toLowerCase()))
+        return { size: 2, signed: false, category: "integer" };
+    const call = /^([A-Za-z_]\w*)\s*\(/.exec(text);
+    if (call) {
+        const fn = ctx.functions.get(call[1].toLowerCase());
+        if (fn && fn.returnCategory !== "floating" && fn.returnSize > 0) {
+            return { size: fn.returnSize, signed: fn.returnSigned !== false, category: "integer" };
+        }
+    }
+    // Unary signs preserve the operand type, but a leading minus also makes an
+    // otherwise unknown numeric expression signed.
+    if (/^[+-]/.test(text)) {
+        const operand = inferIntegerExpressionType(text.slice(1), ctx);
+        return operand ? { ...operand, signed: true } : { size: 2, signed: true, category: "integer" };
+    }
+    if (text.startsWith("~"))
+        return inferIntegerExpressionType(text.slice(1), ctx) ?? { size: 2, signed: true, category: "integer" };
+    if (text.startsWith("!"))
+        return { size: 2, signed: true, category: "integer" };
+    const binary = findTopLevelBinaryOperator(text, [
+        "||", "&&", "==", "!=", "<=", ">=", "<<", ">>", "|", "^", "&", "+", "-", "*", "/", "%", "<", ">",
+    ]);
+    if (binary) {
+        const left = inferIntegerExpressionType(binary.left, ctx);
+        const right = inferIntegerExpressionType(binary.right, ctx);
+        if (!left || !right)
+            return left ?? right ?? fallback;
+        // Integer promotions: all char/bit operands become signed int on this
+        // 16-bit target because int represents the complete 8-bit range.
+        if (left.size <= 1 && right.size <= 1)
+            return { size: 2, signed: true, category: "integer" };
+        const size = Math.max(left.size, right.size);
+        const larger = left.size === size && right.size !== size ? left : right.size === size && left.size !== size ? right : null;
+        if (larger)
+            return { size, signed: larger.signed, category: "integer" };
+        // Same-rank signed/unsigned operands convert to unsigned.
+        return { size, signed: left.signed && right.signed, category: "integer" };
+    }
+    // Unsuffixed integer constants have type signed int here.  U/L suffixes are
+    // enough to distinguish the explicit unsigned/long forms used by the C51
+    // examples and runtime tests.
+    if (/^(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|\d+)(?:[uU]?[lL]?|[lL][uU])$/.test(text)) {
+        const unsigned = /u/i.test(text);
+        const wide = /l/i.test(text) || (tryEvalConstWide(text) ?? 0) > 0xffff;
+        return { size: wide ? 4 : 2, signed: !unsigned, category: "integer" };
+    }
+    return fallback;
 }
 function allocateWordTemp(ctx, prefix, line) {
     return ensureVar(ctx, `__${prefix}_${ctx.labelCounter.value++}`, line, 2);
@@ -3680,7 +4186,7 @@ function emitExprToA(expr, ctx, line) {
         if (localArray) {
             const indexConst = tryEvalConst(arrayMatch[2]);
             if (indexConst != null)
-                return [`mov a,${toAsmByte(localArray.baseAddr + normalizedArrayOffset(indexConst, localArray))}`];
+                return [`mov a,${toAsmByte(localArray.baseAddr + normalizedArrayOffset(indexConst, localArray, ctx, line))}`];
             return [...emitScaledIndexToA(arrayMatch[2], localArray.elementSize, ctx, line), `add a,#${toAsmByte8(localArray.baseAddr)}`, "mov r0,a", "mov a,@r0"];
         }
         if (ctx.pointerVars.has(arrayName))
@@ -3708,12 +4214,6 @@ function emitExprToA(expr, ctx, line) {
         if (!found)
             continue;
         if (found.op === "*" || found.op === "/" || found.op === "%") {
-            const wideOperand = switchExpressionSize(found.left, ctx) > 1 || switchExpressionSize(found.right, ctx) > 1;
-            if (found.op !== "*" || wideOperand) {
-                const out = emitExprToLong(trimmed, ctx, line);
-                const result = ensureVar(ctx, "__long_result", line, 4);
-                return [...out, `mov a,${variableTarget(result)}`];
-            }
             return emitMulDivToA(found.left, found.op, found.right, ctx, line);
         }
         return [...emitExprToA(found.left, ctx, line), ...emitApplyBinaryToA(found.op, found.right, ctx, line)];
@@ -3775,7 +4275,20 @@ function resolveSizeofValue(rawItem, ctx) {
         ?? scalarTypeInfo(item)?.size
         ?? null;
 }
-function normalizedArrayOffset(index, array) {
+function normalizedArrayOffset(index, array, ctx, line) {
+    // A constant index outside the declared bounds is a hard error: the old code
+    // silently wrapped it modulo the length, so `char a[3]; a[5] = 1;` quietly
+    // wrote to a[2]. Wrapping is kept as the fallback so codegen stays in range.
+    if (ctx && (index < 0 || index >= array.elementCount)) {
+        // Constants arrive already wrapped to 16 bits, so restore the negative
+        // spelling for the message: 0xFFFF reads much better as -1.
+        const readable = index >= 0x8000 ? index - 0x10000 : index;
+        ctx.diagnostics.push({
+            level: "error",
+            line,
+            message: `Index ${readable} is out of bounds for ${array.name}[${array.elementCount}] (valid 0..${array.elementCount - 1}).`,
+        });
+    }
     const normalized = ((index % array.elementCount) + array.elementCount) % array.elementCount;
     return normalized * array.elementSize;
 }
@@ -3889,6 +4402,18 @@ function emitFloatComparisonFalseJump(leftExpr, op, rightExpr, falseLabel, ctx, 
     return out;
 }
 function emitMulDivToA(left, op, right, ctx, line) {
+    // Signed 8-bit division and modulo cannot use DIV AB, which is unsigned:
+    // (char)-10 / 3 would compute 246 / 3. Route those through the sign-correcting
+    // 16-bit helper and keep only the low byte of the result.
+    // Even in an 8-bit context the operands must be evaluated at their own width:
+    // for `unsigned int a, b`, `(unsigned char)(a * b)` has to multiply 16x16 and
+    // only then truncate. MUL AB / DIV AB would truncate the inputs first.
+    if (isWideMulDivOperand(left, ctx) || isWideMulDivOperand(right, ctx)) {
+        return emitWordMulDiv(left, op, right, isSignedWordExpr(left, right, ctx), ctx, line);
+    }
+    if (op !== "*" && isSignedWordExpr(left, right, ctx)) {
+        return [...emitWordMulDiv(left, op, right, true, ctx, line)];
+    }
     const lhs = ensureVar(ctx, "__arith_lhs", line);
     const out = [...emitExprToA(left, ctx, line), `mov ${variableTarget(lhs)},a`, ...emitExprToA(right, ctx, line), "mov b,a", `mov a,${variableTarget(lhs)}`];
     if (op === "*")
@@ -4351,7 +4876,7 @@ function nextLabel(ctx, prefix) {
 function allocateBlock(ctx, length, line) {
     const base = ctx.nextVarAddr.value;
     ctx.nextVarAddr.value += Math.max(1, length);
-    if (ctx.nextVarAddr.value > 0x80) {
+    if (ctx.nextVarAddr.value > IRAM_USER_LIMIT) {
         ctx.diagnostics.push({ level: "error", line, message: "Out of local variable storage (IRAM 0x30..0x7F)." });
     }
     return base;
@@ -4383,7 +4908,7 @@ function allocateFunctionParams(functions, structDefs, nextVarAddr, diagnostics)
             param.argAddr = nextVarAddr.value;
             nextVarAddr.value += size;
             offset += size;
-            if (nextVarAddr.value > 0x80)
+            if (nextVarAddr.value > IRAM_USER_LIMIT)
                 diagnostics.push({ level: "error", message: `Parameters of ${fn.name} exceed internal RAM 0x30..0x7F.` });
         }
     }
@@ -4395,7 +4920,7 @@ function allocateFunctionReturnSlots(functions, nextVarAddr, diagnostics) {
             continue;
         const addr = nextVarAddr.value;
         nextVarAddr.value += 4;
-        if (nextVarAddr.value > 0x80)
+        if (nextVarAddr.value > IRAM_USER_LIMIT)
             diagnostics.push({ level: "error", message: `Return value of ${fn.name} exceeds internal RAM 0x30..0x7F.` });
         slots.set(fn.name, { name: `__return_${fn.name}`, addr, size: 4, signed: fn.returnSigned, category: fn.returnCategory ?? "integer" });
     }
@@ -4915,7 +5440,7 @@ function emitStoreToLValue(lhs, rhs, ctx, line) {
         if (arr) {
             const idxConst = tryEvalConst(localArr[2]);
             if (idxConst != null) {
-                const address = arr.baseAddr + normalizedArrayOffset(idxConst, arr);
+                const address = arr.baseAddr + normalizedArrayOffset(idxConst, arr, ctx, line);
                 if (arr.elementSize >= 2)
                     return [...emitExprToWord(rhs, ctx, line), `mov ${toAsmByte(address)},a`, `mov ${toAsmByte(address + 1)},b`];
                 return emitAssignToTarget(toAsmByte(address), rhs, ctx, line);
@@ -5402,7 +5927,7 @@ function emitAddressExpressionToWord(expr, ctx, line) {
         if (local) {
             const constant = tryEvalConst(indexed[2]);
             if (constant != null) {
-                const addressValue = local.baseAddr + normalizedArrayOffset(constant, local);
+                const addressValue = local.baseAddr + normalizedArrayOffset(constant, local, ctx, line);
                 return [`mov a,#${toAsmByte8(addressValue)}`, "mov b,#0x0"];
             }
             return [...emitScaledIndexToWord(indexed[2], local.elementSize, ctx, line), `add a,#${toAsmByte8(local.baseAddr)}`, "mov r0,a", "mov a,r0", "mov b,#0x0"];
@@ -5452,7 +5977,7 @@ function emitXdataConstantBytes(baseAddr, bytes) {
 function emitXdataArrayAddress(array, index, ctx, line) {
     const constant = tryEvalConst(index);
     if (constant != null)
-        return [`mov dptr,#${toAsmByte(array.baseAddr + normalizedArrayOffset(constant, array))}`];
+        return [`mov dptr,#${toAsmByte(array.baseAddr + normalizedArrayOffset(constant, array, ctx, line))}`];
     return [
         ...emitScaledIndexToA(index, array.elementSize, ctx, line),
         `add a,#${toAsmByte8(array.baseAddr)}`,

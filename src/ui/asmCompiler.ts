@@ -256,11 +256,28 @@ export function compileAsm(source: string): AsmCompileResult {
 
   const map = new Map<number, number>();
   const pcToLine: Array<{ pc: number; line: number }> = [];
+  // Which source line last wrote each code byte, so a second ORG landing on
+  // already-generated code can be reported instead of silently overwriting it.
+  const writtenBy = new Map<number, number>();
+  const overlapReported = new Set<number>();
   for (const entry of parsed) {
     pcToLine.push({ pc: entry.address & 0xffff, line: entry.line });
     const encoded = encodeInstruction(entry, labels, equ, diagnostics);
     if (!encoded) continue;
-    encoded.forEach((byte, offset) => map.set(entry.address + offset, byte & 0xff));
+    encoded.forEach((byte, offset) => {
+      const address = entry.address + offset;
+      const previousLine = writtenBy.get(address);
+      if (previousLine != null && previousLine !== entry.line && !overlapReported.has(entry.line)) {
+        overlapReported.add(entry.line);
+        diagnostics.push({
+          level: "error",
+          line: entry.line,
+          message: `Code overlap at address ${formatCodeAddress(address)}: this statement overwrites output already generated on line ${previousLine}. Check the ORG directives.`,
+        });
+      }
+      writtenBy.set(address, entry.line);
+      map.set(address, byte & 0xff);
+    });
   }
 
   const bytes = flattenMap(map);
@@ -1295,6 +1312,10 @@ function estimateSize(mnemonic: string, operands: string[], equ: ConstantMap): n
   }
 }
 
+function formatCodeAddress(address: number): string {
+  return `0x${(address & 0xffff).toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
 function encodeInstruction(
   entry: ParsedLine,
   labels: Map<string, number>,
@@ -1398,6 +1419,7 @@ function encodeInstruction(
     diagnostics.push({ level: "error", line: entry.line, message });
     return null;
   };
+
 
   switch (entry.mnemonic) {
     case "db": {

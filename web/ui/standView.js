@@ -290,6 +290,8 @@ export function renderStand(params) {
     boardSurface.addEventListener("pointerdown", () => {
         editor.blur();
     });
+    // Typed as ScopeSource so motorPanel.open() gets a checked value instead of
+    // a widened `string` (previously a TS2345 error).
     const scopeHitAreas = [
         { source: "sevenSeg", x: 428, y: 44, w: 232, h: 104 },
         { source: "ledBar", x: 38, y: 188, w: 232, h: 56 },
@@ -1258,7 +1260,7 @@ export function renderStand(params) {
         }).join("");
         const codeBytes = [0, 1, 2, 3].map((d) => hexByte(cpu.readCode(pc + d))).join(" ");
         const kv = (label, value, extra = "") => `<div class="runnerKv ${extra}"><span>${escapeHtml(label)}</span><b>${escapeHtml(String(value))}</b></div>`;
-        const kvList = (items) => items.map(([label, value]) => kv(label, value)).join("");
+        const kvList = (items) => items.map(([label, value]) => kv(String(label), value)).join("");
         const card = (title, body, extra = "") => `<section class="runnerCard ${extra}"><h3>${escapeHtml(title)}</h3>${body}</section>`;
         const smallTable = (rows, headers) => `<table class="runnerTable"><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows
             .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(String(cell))}</td>`).join("")}</tr>`)
@@ -1890,6 +1892,9 @@ function highlightCLines(source) {
     }
     return out;
 }
+// Typed element factory. The untyped version returned `any`, which disabled
+// checking at every call site and made `querySelector<T>()` on the result a
+// TS2347 error ("untyped function calls may not accept type arguments").
 function el(tag, attrs = {}) {
     const node = document.createElement(tag);
     for (const [key, value] of Object.entries(attrs)) {

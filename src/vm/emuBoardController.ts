@@ -3,7 +3,7 @@ import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm";
 import { SFR, ST841_MAP } from "./st841Map";
 import { ADUC841_MACHINE_CYCLE_HZ } from "./scopeRecorder";
 
-type CpuTraceEntry = {
+export type CpuTraceEntry = {
   pc: number;
   opcode: number;
   acc: number;

@@ -1,10 +1,11 @@
-import { EmuBoardController } from "../vm/emuBoardController";
+import { EmuBoardController, type CpuTraceEntry } from "../vm/emuBoardController";
+import type { Board } from "../vm/board";
 import { flashAduc841, isAduc841SerialSupported } from "../vm/aduc841Serial";
 import { SFR } from "../vm/st841Map";
-import { compileAsm } from "./asmCompiler";
+import { compileAsm, type AsmDiagnostic } from "./asmCompiler";
 import { checkC } from "./cChecker";
 import { transpileCToAsm } from "./cTranspiler";
-import { createMotorPanel } from "./motorPanel";
+import { createMotorPanel, type ScopeSource } from "./motorPanel";
 import { LiveAudioMonitor } from "./liveAudioMonitor";
 import { createLogicEditor } from "./logicEditor";
 import {
@@ -17,6 +18,7 @@ import {
     C_MEMORY_QUALIFIERS,
     C_TYPE_NAMES,
     getCodeCompletions,
+    type CodeCompletion,
 } from "./codeCompletions";
 
 type UiLanguage = "en" | "uk";
@@ -195,12 +197,12 @@ const SUBTREE_TRANSLATIONS: Array<[string, string]> = [
     ["Nested editable circuit", "Вкладена редагована схема"],
 ];
 
-export function renderStand(params) {
+export function renderStand(params: { board: Board }): HTMLElement {
     const { board } = params;
     const cpu = new EmuBoardController(board);
     const liveAudio = new LiveAudioMonitor();
     const root = el("div", { class: "minimalShell" });
-    let uiTheme = localStorage.getItem("st841.ui.theme") === "light" ? "light" : "dark";
+    let uiTheme: "light" | "dark" = localStorage.getItem("st841.ui.theme") === "light" ? "light" : "dark";
     let uiLanguage: UiLanguage = localStorage.getItem(UI_LANGUAGE_KEY) === "uk" ? "uk" : "en";
     const t = <K extends keyof typeof UI_TEXT.en>(key: K): (typeof UI_TEXT)[UiLanguage][K] => UI_TEXT[uiLanguage][key];
     const tr = (english: string, ukrainian: string): string => uiLanguage === "uk" ? ukrainian : english;
@@ -311,13 +313,15 @@ export function renderStand(params) {
     boardSurface.addEventListener("pointerdown", () => {
         editor.blur();
     });
-    const scopeHitAreas = [
+    // Typed as ScopeSource so motorPanel.open() gets a checked value instead of
+    // a widened `string` (previously a TS2345 error).
+    const scopeHitAreas: Array<{ source: ScopeSource; x: number; y: number; w: number; h: number }> = [
         { source: "sevenSeg", x: 428, y: 44, w: 232, h: 104 },
         { source: "ledBar", x: 38, y: 188, w: 232, h: 56 },
         { source: "matrix", x: 82, y: 266, w: 132, h: 186 },
         { source: "lcd", x: 404, y: 262, w: 268, h: 184 },
     ];
-    const scopeSourceAtPointer = (event) => {
+    const scopeSourceAtPointer = (event: MouseEvent | PointerEvent): ScopeSource | null => {
         const rect = canvas.getBoundingClientRect();
         const x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width;
         const y = ((event.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height;
@@ -450,7 +454,7 @@ export function renderStand(params) {
     let programLoaded = false;
     cpu.setSpeed(speedToBatch(currentSpeed));
     let editorScrollDrag = false;
-    let currentPcToLine = [];
+    let currentPcToLine: Array<{ pc: number; line: number }> = [];
     let lastUiUpdateTs = 0;
     let lastDebugUpdateTs = 0;
     // The stand, motor and oscilloscope are visual feedback. 30 FPS is smooth
@@ -459,15 +463,15 @@ export function renderStand(params) {
     let lastVisualFrameTs = performance.now() - visualFrameIntervalMs;
     let lastBoardVisualRevision = -1;
     let debugOpen = false;
-    let inputDebounce = null;
+    let inputDebounce: number | null = null;
     let diagnosticLines = new Map();
     const savedFileKey = "st841.editor.autosave.v2";
-    let autosaveTimer = null;
+    let autosaveTimer: number | null = null;
     let autosaveEnabled = localStorage.getItem("st841.editor.autosave.enabled") !== "0";
     let lastSavedSignature = "";
     let autocompleteOpen = false;
     let autocompleteIndex = 0;
-    let autocompleteMatches = [];
+    let autocompleteMatches: CodeCompletion[] = [];
     let autocompletePrefix = "";
     let autocompleteReplaceStart = 0;
   let autocompleteReplaceEnd = 0;
@@ -677,7 +681,7 @@ export function renderStand(params) {
         syncAutocompleteGhostScroll();
     }
     function updateAutocompleteActiveClass() {
-        for (const node of Array.from(autocompleteMenu.querySelectorAll(".autocompleteItem"))) {
+        for (const node of Array.from(autocompleteMenu.querySelectorAll<HTMLElement>(".autocompleteItem"))) {
             node.classList.toggle("active", autocompleteUserSelected && Number(node.dataset.index || "0") === autocompleteIndex);
         }
         syncAutocompleteActive();
@@ -711,7 +715,7 @@ export function renderStand(params) {
         <span class="autocompletePreview">${escapeHtml(completionPreview(item.insertText))}</span>
       </button>`)
             .join("");
-        for (const node of Array.from(autocompleteMenu.querySelectorAll(".autocompleteItem"))) {
+        for (const node of Array.from(autocompleteMenu.querySelectorAll<HTMLElement>(".autocompleteItem"))) {
             node.addEventListener("mousemove", () => {
                 const next = Number(node.dataset.index || "0");
                 if (next !== autocompleteIndex || !autocompleteUserSelected) {
@@ -1116,7 +1120,7 @@ export function renderStand(params) {
         updateRuntimeBar(asm.ok);
         return { ok: asm.ok, diagnostics: asm.diagnostics, hex: asm.hex, pcToLine: asm.pcToLine };
     }
-    function showMessages(list, summary, expand = false) {
+    function showMessages(list: AsmDiagnostic[], summary: string, expand = false) {
         diagnosticLines = buildDiagnosticLineMap(list);
         updateSyntaxHighlight();
         messagesBody.innerHTML = "";
@@ -1281,10 +1285,10 @@ export function renderStand(params) {
             return `<tr class="${current ? "runnerCurrentRow" : ""}"><td>${escapeHtml(String(item.tick))}</td><td>${hexWord(item.pc)}</td><td>${hexByte(item.opcode)}</td><td>${line ? `L${line.line}` : "-"}</td><td>${hexByte(item.acc)}</td><td>${hexByte(item.p0)}</td><td>${hexByte(item.p2)}</td></tr>`;
         }).join("");
         const codeBytes = [0, 1, 2, 3].map((d) => hexByte(cpu.readCode(pc + d))).join(" ");
-        const kv = (label, value, extra = "") => `<div class="runnerKv ${extra}"><span>${escapeHtml(label)}</span><b>${escapeHtml(String(value))}</b></div>`;
-        const kvList = (items) => items.map(([label, value]) => kv(label, value)).join("");
-        const card = (title, body, extra = "") => `<section class="runnerCard ${extra}"><h3>${escapeHtml(title)}</h3>${body}</section>`;
-        const smallTable = (rows, headers) => `<table class="runnerTable"><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows
+        const kv = (label: string, value: unknown, extra = "") => `<div class="runnerKv ${extra}"><span>${escapeHtml(label)}</span><b>${escapeHtml(String(value))}</b></div>`;
+        const kvList = (items: ReadonlyArray<readonly [string, unknown]> | unknown[][]) => (items as unknown[][]).map(([label, value]) => kv(String(label), value)).join("");
+        const card = (title: string, body: string, extra = "") => `<section class="runnerCard ${extra}"><h3>${escapeHtml(title)}</h3>${body}</section>`;
+        const smallTable = (rows: unknown[][], headers: string[]) => `<table class="runnerTable"><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows
             .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(String(cell))}</td>`).join("")}</tr>`)
             .join("")}</tbody></table>`;
         debugBody.innerHTML = `
@@ -1381,7 +1385,7 @@ export function renderStand(params) {
         fullscreenBtn.setAttribute("aria-label", fullscreenBtn.title);
         fullscreenBtn.classList.toggle("active", active);
     }
-    function setUiTheme(theme) {
+    function setUiTheme(theme: "light" | "dark") {
         uiTheme = theme === "light" ? "light" : "dark";
         root.dataset.theme = uiTheme;
         document.documentElement.style.colorScheme = uiTheme;
@@ -1439,7 +1443,7 @@ export function renderStand(params) {
             renderDebugPanel();
         window.dispatchEvent(new CustomEvent("st841:languagechange", { detail: { language: uiLanguage } }));
     }
-    function setSpeed(speed) {
+    function setSpeed(speed: number) {
         currentSpeed = speed;
         cpu.setSpeed(speedToBatch(currentSpeed));
         for (const item of speedButtons) {
@@ -1495,7 +1499,7 @@ export function renderStand(params) {
         execMarker.style.setProperty("--marker-top", `${Math.round(y)}px`);
         execMarker.style.setProperty("--marker-opacity", "1");
     }
-    function updateEditorScrollFromPointer(event) {
+    function updateEditorScrollFromPointer(event: PointerEvent) {
         const rect = scrollSlider.getBoundingClientRect();
         const thumbHeight = scrollThumb.offsetHeight || 34;
         const y = Math.max(0, Math.min(rect.height - thumbHeight, event.clientY - rect.top - thumbHeight / 2));
@@ -1513,7 +1517,7 @@ export function renderStand(params) {
         joystickKnob.style.left = `${centerX + nx * movePct}%`;
         joystickKnob.style.top = `${centerY + ny * movePct}%`;
     }
-    function updateJoystickFromPointer(event) {
+    function updateJoystickFromPointer(event: PointerEvent) {
         const rect = joystickFace.getBoundingClientRect();
         const cx = rect.width / 2;
         const cy = rect.height / 2;
@@ -1604,33 +1608,33 @@ function localizeStaticSubtree(root: HTMLElement, language: UiLanguage): void {
     }
 }
 
-function option(value, label) {
+function option(value: string, label: string): HTMLOptionElement {
     const node = document.createElement("option");
     node.value = value;
     node.textContent = label;
     return node;
 }
-function caption(text) {
+function caption(text: string): HTMLDivElement {
     const node = el("div", { class: "boardCaption mono" });
     node.textContent = text;
     return node;
 }
-function button(text, tone = "") {
+function button(text: string, tone = ""): HTMLButtonElement {
     const node = el("button", { class: `topBtn ${tone}`.trim() });
     node.textContent = text;
     return node;
 }
-function hexByte(value) {
+function hexByte(value: number): string {
     return "0x" + (value & 0xff).toString(16).padStart(2, "0").toUpperCase();
 }
-function hexWord(value) {
+function hexWord(value: number): string {
     return "0x" + (value & 0xffff).toString(16).padStart(4, "0").toUpperCase();
 }
-function speedToBatch(speed) {
+function speedToBatch(speed: number): number {
     // 1x should feel close to real board refresh speed.
     return Math.max(1, Math.round(speed * 16700));
 }
-function formatCount(value) {
+function formatCount(value: number): string {
     if (value < 1000)
         return String(value);
     if (value < 1000000)
@@ -1639,7 +1643,7 @@ function formatCount(value) {
         return `${(value / 1000000).toFixed(1)}M`;
     return `${(value / 1000000000).toFixed(1)}G`;
 }
-function decodeInstruction(cpu) {
+function decodeInstruction(cpu: EmuBoardController): string {
     const pc = cpu.getPC();
     const op = cpu.readCode(pc);
     if (op >= 0x78 && op <= 0x7f)
@@ -1674,7 +1678,7 @@ function decodeInstruction(cpu) {
         return `MOV A,R${op - 0xe8}`;
     return "EXEC";
 }
-function buildExecFlow(trace, currentPc, pcToLine) {
+function buildExecFlow(trace: CpuTraceEntry[], currentPc: number, pcToLine: Array<{ pc: number; line: number }>) {
     const pc = currentPc & 0xffff;
     const hit = pcToLine.find((item) => item.pc === pc);
     const line = hit ? `ASM line: ${hit.line}` : "ASM line: -";
@@ -1713,13 +1717,13 @@ function buildExecFlow(trace, currentPc, pcToLine) {
         lastCallRet,
     };
 }
-function isCallRetOpcode(op) {
+function isCallRetOpcode(op: number): boolean {
     const code = op & 0xff;
     if (code === 0x12 || code === 0x22 || code === 0x32)
         return true;
     return (code & 0x1f) === 0x11;
 }
-function decodeOpcodeName(op) {
+function decodeOpcodeName(op: number): string {
     const code = op & 0xff;
     if (code === 0x12)
         return "LCALL";
@@ -1731,23 +1735,23 @@ function decodeOpcodeName(op) {
         return "RETI";
     return "OP";
 }
-function trimTrailingEmptyLines(text) {
+function trimTrailingEmptyLines(text: string): string {
     const normalized = text.replace(/\r/g, "");
     const trimmed = normalized.replace(/\n+$/g, "");
     return trimmed.length ? trimmed : "";
 }
-function normalizeEditorText(text) {
+function normalizeEditorText(text: string): string {
     const normalized = text.replace(/\r\n?/g, "\n");
     return normalized.replace(/\n{3,}/g, "\n\n");
 }
-function completionPreview(text) {
+function completionPreview(text: string): string {
     return String(text)
         .replace(/\\/g, "\\\\")
         .replace(/\r/g, "\\r")
         .replace(/\n/g, "\\n")
         .replace(/\t/g, "\\t");
 }
-function decorateHighlightedLines(highlighted, diagnosticLines, endsWithNewline) {
+function decorateHighlightedLines(highlighted: string, diagnosticLines: Map<number, string>, endsWithNewline: boolean): string {
     const lines = highlighted.split("\n");
     const decorated = lines.map((line, index) => {
         const lineNo = index + 1;
@@ -1759,8 +1763,8 @@ function decorateHighlightedLines(highlighted, diagnosticLines, endsWithNewline)
     });
     return decorated.join("\n") + (endsWithNewline ? "\n" : "");
 }
-function buildDiagnosticLineMap(list) {
-    const map = new Map();
+function buildDiagnosticLineMap(list: AsmDiagnostic[]): Map<number, string> {
+    const map = new Map<number, string>();
     for (const item of list) {
         if (item.line == null)
             continue;
@@ -1770,22 +1774,22 @@ function buildDiagnosticLineMap(list) {
     }
     return map;
 }
-function highlightAsm(source) {
+function highlightAsm(source: string): string {
     return source
         .split("\n")
         .map((line) => highlightAsmLine(line))
         .join("\n");
 }
-function highlightC(source) {
+function highlightC(source: string): string {
     return highlightCLines(source);
 }
-function escapeHtml(text) {
+function escapeHtml(text: string): string {
     return text
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
 }
-function highlightAsmLine(line) {
+function highlightAsmLine(line: string): string {
     const semicolonPos = line.indexOf(";");
     const slashPos = line.indexOf("//");
     const commentPos = semicolonPos < 0 ? slashPos : slashPos < 0 ? semicolonPos : Math.min(semicolonPos, slashPos);
@@ -1827,7 +1831,7 @@ function highlightAsmLine(line) {
         out += `<span class="tok-comment">${escapeHtml(comment)}</span>`;
     return out;
 }
-function highlightCLines(source) {
+function highlightCLines(source: string): string {
     const text = source.replace(/\r/g, "");
     let out = "";
     let i = 0;
@@ -1916,7 +1920,13 @@ function highlightCLines(source) {
     }
     return out;
 }
-function el(tag, attrs = {}) {
+// Typed element factory. The untyped version returned `any`, which disabled
+// checking at every call site and made `querySelector<T>()` on the result a
+// TS2347 error ("untyped function calls may not accept type arguments").
+function el<K extends keyof HTMLElementTagNameMap>(
+    tag: K,
+    attrs: Record<string, string> = {},
+): HTMLElementTagNameMap[K] {
     const node = document.createElement(tag);
     for (const [key, value] of Object.entries(attrs)) {
         node.setAttribute(key, value);

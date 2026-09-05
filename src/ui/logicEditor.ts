@@ -30,6 +30,8 @@ interface LogicEditorHandle {
   element: HTMLElement;
   open(): void;
   close(): void;
+  /** Stop the animation loop and release listeners. */
+  destroy(): void;
 }
 
 interface LogicEditorOptions {
@@ -76,6 +78,7 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
   const adapter = createBoardLogicAdapter(options.board);
   let project = restoreProject();
   let currentCircuitId = project.rootCircuitId;
+  let animationHandle = 0;
   let selectedId: string | null = null;
   let selectedWireId: string | null = null;
   let selectedComponentIds = new Set<string>();
@@ -273,13 +276,14 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
   svg.addEventListener("contextmenu", onCanvasContextMenu);
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("fullscreenchange", updateFullscreenButton);
-  document.addEventListener("click", (event) => {
+  const onDocumentClick = (event: MouseEvent): void => {
     if (wireColorPopover && !wireColorPopover.contains(event.target as Node)) closeWireColorPopover();
     if (!propertiesPopover.classList.contains("hidden") && !propertiesPopover.contains(event.target as Node)) closePropertiesPopover();
     if (!dropdown.contains(event.target as Node) && event.target !== fileButton && event.target !== editButton && event.target !== viewButton) {
       closeDropdown();
     }
-  });
+  };
+  document.addEventListener("click", onDocumentClick);
 
   function openEditor(): void {
     open = true;
@@ -288,16 +292,24 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     syncRunButton();
     renderAll();
     svg.focus();
+    scheduleTick();
   }
 
   function closeEditor(): void {
     open = false;
+    running = false;
+    adapter.releaseAll();
+    if (animationHandle !== 0) {
+      window.cancelAnimationFrame(animationHandle);
+      animationHandle = 0;
+    }
     modal.classList.add("hidden");
     pendingWire = null;
     clearPinHover();
     closeWireColorPopover();
     closePropertiesPopover();
     persistProject();
+    syncRunButton();
     if (document.fullscreenElement === modal) void document.exitFullscreen();
   }
 
@@ -1720,9 +1732,12 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
         lastClockTime = now;
       }
     }
-    window.requestAnimationFrame(tick);
+    animationHandle = 0;
+    if (open) scheduleTick();
   }
-  window.requestAnimationFrame(tick);
+  function scheduleTick(): void {
+    if (animationHandle === 0 && open) animationHandle = window.requestAnimationFrame(tick);
+  }
 
   function showTruthTable(): void {
     const circuit = currentCircuit();
@@ -2297,7 +2312,20 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     dialogLayer.innerHTML = "";
   }
 
-  return { element: modal, open: openEditor, close: closeEditor };
+  function destroy(): void {
+    // The clock loop reschedules itself forever; without this the editor keeps
+    // evaluating circuits (and holding the whole project graph) after teardown.
+    if (animationHandle !== 0) {
+      window.cancelAnimationFrame(animationHandle);
+      animationHandle = 0;
+    }
+    document.removeEventListener("keydown", onKeyDown);
+    document.removeEventListener("fullscreenchange", updateFullscreenButton);
+    document.removeEventListener("click", onDocumentClick);
+    closeEditor();
+  }
+
+  return { element: modal, open: openEditor, close: closeEditor, destroy };
 }
 
 function restoreProject(): LogicProject {
