@@ -166,7 +166,11 @@ export function getComponentPins(component, project) {
             return [];
     }
 }
-export function getComponentSize(component, project) {
+/**
+ * Unrotated body size. Rendering and hit-testing should normally use
+ * `getComponentSize`, which swaps the axes for 90/270 degree rotations.
+ */
+export function getComponentBaseSize(component, project) {
     const pins = getComponentPins(component, project);
     const inputCount = pins.filter((pin) => pin.direction === "input").length;
     const outputCount = pins.filter((pin) => pin.direction === "output").length;
@@ -188,19 +192,90 @@ export function getComponentSize(component, project) {
         return { width: 104, height: 78 };
     return { width: component.kind === "CUSTOM" ? 136 : 120, height: Math.max(72, 34 + Math.max(inputCount, outputCount) * 25) };
 }
-export function getPinPosition(component, pinId, project) {
-    const size = getComponentSize(component, project);
+/**
+ * Outer bounding box of a placed component. Rotating by 90 or 270 degrees
+ * swaps width and height, so selection boxes, marquee hit-testing and drag
+ * bounds all have to go through this rather than the raw body size.
+ */
+export function getComponentSize(component, project) {
+    const base = getComponentBaseSize(component, project);
+    const rotation = normalizeRotation(component.rotation);
+    return rotation === 90 || rotation === 270
+        ? { width: base.height, height: base.width }
+        : base;
+}
+export function normalizeRotation(rotation) {
+    const value = ((Math.round((rotation ?? 0) / 90) * 90) % 360 + 360) % 360;
+    return value;
+}
+/**
+ * Pin offset inside the *unrotated* body, measured from the body origin.
+ * Inputs sit on the left edge, outputs on the right, evenly spaced.
+ */
+export function getPinLocalOffset(component, pinId, project) {
+    const base = getComponentBaseSize(component, project);
     const pins = getComponentPins(component, project);
     const pin = pins.find((item) => item.id === pinId);
     if (!pin)
-        return { x: component.x, y: component.y };
+        return { x: 0, y: 0 };
     const group = pins.filter((item) => item.direction === pin.direction);
     const index = Math.max(0, group.findIndex((item) => item.id === pinId));
-    const spacing = size.height / (group.length + 1);
+    const spacing = base.height / (group.length + 1);
     return {
-        x: component.x + (pin.direction === "input" ? 0 : size.width),
-        y: component.y + spacing * (index + 1),
+        x: pin.direction === "input" ? 0 : base.width,
+        y: spacing * (index + 1),
     };
+}
+/**
+ * Rotate a point that lives in unrotated body space into placed-body space.
+ * The result stays inside the rotated bounding box with the origin at its
+ * top-left corner, which keeps `component.x/y` meaning the same thing for
+ * every rotation.
+ */
+export function rotateLocalPoint(point, rotation, base) {
+    switch (rotation) {
+        case 90:
+            return { x: base.height - point.y, y: point.x };
+        case 180:
+            return { x: base.width - point.x, y: base.height - point.y };
+        case 270:
+            return { x: point.y, y: base.width - point.x };
+        default:
+            return { x: point.x, y: point.y };
+    }
+}
+/**
+ * The outward direction a pin's lead points in, after rotation. Wire routing
+ * uses it so a wire always leaves a pin perpendicular to the body edge.
+ */
+export function getPinDirectionVector(component, pinId, project) {
+    const pins = getComponentPins(component, project);
+    const pin = pins.find((item) => item.id === pinId);
+    if (!pin)
+        return { x: 1, y: 0 };
+    const outward = pin.direction === "input" ? { x: -1, y: 0 } : { x: 1, y: 0 };
+    // `+ 0` collapses negative zero, which otherwise leaks into saved projects
+    // and breaks strict comparisons.
+    const zeroed = (value) => value + 0;
+    switch (normalizeRotation(component.rotation)) {
+        case 90:
+            return { x: zeroed(-outward.y), y: zeroed(outward.x) };
+        case 180:
+            return { x: zeroed(-outward.x), y: zeroed(-outward.y) };
+        case 270:
+            return { x: zeroed(outward.y), y: zeroed(-outward.x) };
+        default:
+            return outward;
+    }
+}
+export function getPinPosition(component, pinId, project) {
+    const pins = getComponentPins(component, project);
+    if (!pins.some((item) => item.id === pinId))
+        return { x: component.x, y: component.y };
+    const base = getComponentBaseSize(component, project);
+    const local = getPinLocalOffset(component, pinId, project);
+    const rotated = rotateLocalPoint(local, normalizeRotation(component.rotation), base);
+    return { x: component.x + rotated.x, y: component.y + rotated.y };
 }
 export function evaluateCircuit(project, circuitId, adapter, inputOverrides = {}, depth = 0, stack = []) {
     const circuit = project.circuits[circuitId];

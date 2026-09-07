@@ -22,6 +22,12 @@ import {
 } from "./codeCompletions";
 
 type UiLanguage = "en" | "uk";
+type ThemeViewTransition = {
+  finished: Promise<void>;
+};
+type ThemeTransitionDocument = Document & {
+  startViewTransition?: (updateCallback: () => void) => ThemeViewTransition;
+};
 type EditorSnapshot = {
   value: string;
   selectionStart: number;
@@ -1001,8 +1007,8 @@ export function renderStand(params: { board: Board }): HTMLElement {
     fullscreenBtn.addEventListener("click", () => {
         toggleSimulatorFullscreen();
     });
-    themeBtn.addEventListener("click", () => {
-        setUiTheme(uiTheme === "dark" ? "light" : "dark");
+    themeBtn.addEventListener("click", (event) => {
+        switchUiThemeWithWave(uiTheme === "dark" ? "light" : "dark", event);
     });
     languageBtn.addEventListener("click", () => {
         setUiLanguage(uiLanguage === "uk" ? "en" : "uk");
@@ -1392,6 +1398,47 @@ export function renderStand(params: { board: Board }): HTMLElement {
         localStorage.setItem("st841.ui.theme", uiTheme);
         lastBoardVisualRevision = -1;
         syncThemeButton();
+    }
+    function switchUiThemeWithWave(theme: "light" | "dark", event: MouseEvent) {
+        const nextTheme = theme === "light" ? "light" : "dark";
+        const transitionDocument = document as ThemeTransitionDocument;
+        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const buttonRect = themeBtn.getBoundingClientRect();
+        const x = event.clientX || buttonRect.left + buttonRect.width / 2;
+        const y = event.clientY || buttonRect.top + buttonRect.height / 2;
+        const radius = Math.ceil(Math.hypot(
+            Math.max(x, window.innerWidth - x),
+            Math.max(y, window.innerHeight - y),
+        ));
+
+        if (!transitionDocument.startViewTransition || reducedMotion) {
+            if (!reducedMotion) playThemeRipple(nextTheme, x, y, radius);
+            setUiTheme(nextTheme);
+            return;
+        }
+
+        const documentRoot = document.documentElement;
+        documentRoot.style.setProperty("--theme-reveal-x", `${x}px`);
+        documentRoot.style.setProperty("--theme-reveal-y", `${y}px`);
+        documentRoot.style.setProperty("--theme-reveal-radius", `${radius}px`);
+        documentRoot.dataset.themeReveal = nextTheme;
+        themeBtn.disabled = true;
+
+        const transition = transitionDocument.startViewTransition(() => setUiTheme(nextTheme));
+        void transition.finished.catch(() => undefined).finally(() => {
+            delete documentRoot.dataset.themeReveal;
+            themeBtn.disabled = false;
+        });
+    }
+    function playThemeRipple(theme: "light" | "dark", x: number, y: number, radius: number) {
+        const ripple = document.createElement("span");
+        ripple.className = `themeRipple ${theme}`;
+        ripple.style.setProperty("--theme-ripple-x", `${x}px`);
+        ripple.style.setProperty("--theme-ripple-y", `${y}px`);
+        ripple.style.setProperty("--theme-ripple-size", `${radius * 2}px`);
+        root.appendChild(ripple);
+        requestAnimationFrame(() => ripple.classList.add("is-running"));
+        ripple.addEventListener("animationend", () => ripple.remove(), { once: true });
     }
     function syncThemeButton() {
         const light = uiTheme === "light";

@@ -288,7 +288,11 @@ export function getComponentPins(component: LogicComponent, project?: LogicProje
   }
 }
 
-export function getComponentSize(component: LogicComponent, project?: LogicProject): { width: number; height: number } {
+/**
+ * Unrotated body size. Rendering and hit-testing should normally use
+ * `getComponentSize`, which swaps the axes for 90/270 degree rotations.
+ */
+export function getComponentBaseSize(component: LogicComponent, project?: LogicProject): { width: number; height: number } {
   const pins = getComponentPins(component, project);
   const inputCount = pins.filter((pin) => pin.direction === "input").length;
   const outputCount = pins.filter((pin) => pin.direction === "output").length;
@@ -303,22 +307,108 @@ export function getComponentSize(component: LogicComponent, project?: LogicProje
   return { width: component.kind === "CUSTOM" ? 136 : 120, height: Math.max(72, 34 + Math.max(inputCount, outputCount) * 25) };
 }
 
+/**
+ * Outer bounding box of a placed component. Rotating by 90 or 270 degrees
+ * swaps width and height, so selection boxes, marquee hit-testing and drag
+ * bounds all have to go through this rather than the raw body size.
+ */
+export function getComponentSize(component: LogicComponent, project?: LogicProject): { width: number; height: number } {
+  const base = getComponentBaseSize(component, project);
+  const rotation = normalizeRotation(component.rotation);
+  return rotation === 90 || rotation === 270
+    ? { width: base.height, height: base.width }
+    : base;
+}
+
+export function normalizeRotation(rotation: number | undefined): 0 | 90 | 180 | 270 {
+  const value = ((Math.round((rotation ?? 0) / 90) * 90) % 360 + 360) % 360;
+  return value as 0 | 90 | 180 | 270;
+}
+
+/**
+ * Pin offset inside the *unrotated* body, measured from the body origin.
+ * Inputs sit on the left edge, outputs on the right, evenly spaced.
+ */
+export function getPinLocalOffset(
+  component: LogicComponent,
+  pinId: string,
+  project?: LogicProject,
+): { x: number; y: number } {
+  const base = getComponentBaseSize(component, project);
+  const pins = getComponentPins(component, project);
+  const pin = pins.find((item) => item.id === pinId);
+  if (!pin) return { x: 0, y: 0 };
+  const group = pins.filter((item) => item.direction === pin.direction);
+  const index = Math.max(0, group.findIndex((item) => item.id === pinId));
+  const spacing = base.height / (group.length + 1);
+  return {
+    x: pin.direction === "input" ? 0 : base.width,
+    y: spacing * (index + 1),
+  };
+}
+
+/**
+ * Rotate a point that lives in unrotated body space into placed-body space.
+ * The result stays inside the rotated bounding box with the origin at its
+ * top-left corner, which keeps `component.x/y` meaning the same thing for
+ * every rotation.
+ */
+export function rotateLocalPoint(
+  point: { x: number; y: number },
+  rotation: 0 | 90 | 180 | 270,
+  base: { width: number; height: number },
+): { x: number; y: number } {
+  switch (rotation) {
+    case 90:
+      return { x: base.height - point.y, y: point.x };
+    case 180:
+      return { x: base.width - point.x, y: base.height - point.y };
+    case 270:
+      return { x: point.y, y: base.width - point.x };
+    default:
+      return { x: point.x, y: point.y };
+  }
+}
+
+/**
+ * The outward direction a pin's lead points in, after rotation. Wire routing
+ * uses it so a wire always leaves a pin perpendicular to the body edge.
+ */
+export function getPinDirectionVector(
+  component: LogicComponent,
+  pinId: string,
+  project?: LogicProject,
+): { x: number; y: number } {
+  const pins = getComponentPins(component, project);
+  const pin = pins.find((item) => item.id === pinId);
+  if (!pin) return { x: 1, y: 0 };
+  const outward = pin.direction === "input" ? { x: -1, y: 0 } : { x: 1, y: 0 };
+  // `+ 0` collapses negative zero, which otherwise leaks into saved projects
+  // and breaks strict comparisons.
+  const zeroed = (value: number) => value + 0;
+  switch (normalizeRotation(component.rotation)) {
+    case 90:
+      return { x: zeroed(-outward.y), y: zeroed(outward.x) };
+    case 180:
+      return { x: zeroed(-outward.x), y: zeroed(-outward.y) };
+    case 270:
+      return { x: zeroed(outward.y), y: zeroed(-outward.x) };
+    default:
+      return outward;
+  }
+}
+
 export function getPinPosition(
   component: LogicComponent,
   pinId: string,
   project?: LogicProject,
 ): { x: number; y: number } {
-  const size = getComponentSize(component, project);
   const pins = getComponentPins(component, project);
-  const pin = pins.find((item) => item.id === pinId);
-  if (!pin) return { x: component.x, y: component.y };
-  const group = pins.filter((item) => item.direction === pin.direction);
-  const index = Math.max(0, group.findIndex((item) => item.id === pinId));
-  const spacing = size.height / (group.length + 1);
-  return {
-    x: component.x + (pin.direction === "input" ? 0 : size.width),
-    y: component.y + spacing * (index + 1),
-  };
+  if (!pins.some((item) => item.id === pinId)) return { x: component.x, y: component.y };
+  const base = getComponentBaseSize(component, project);
+  const local = getPinLocalOffset(component, pinId, project);
+  const rotated = rotateLocalPoint(local, normalizeRotation(component.rotation), base);
+  return { x: component.x + rotated.x, y: component.y + rotated.y };
 }
 
 export function evaluateCircuit(

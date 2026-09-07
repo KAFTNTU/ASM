@@ -136,7 +136,7 @@ expectError(`mov 100h,#1`, /direct address is outside/i);
 expectError(`setb 100h`, /bit address is outside/i);
 expectError(`db 256`, /db value is outside/i);
 expectError(`dw 10000h`, /dw value is outside/i);
-expectError(`mov a,#'AB'`, /cannot resolve operands/i);
+expectError(`mov a,#'AB'`, /character literal must be exactly one/i);
 expectError(`left equ right + 1\nright equ left + 1\ndb left`, /cannot resolve db/i);
 expectError(`value equ 1\nvalue: nop`, /duplicate symbol/i);
 expectError(`same: nop\nsame: ret`, /duplicate symbol/i);

@@ -11,6 +11,10 @@ import {
   expandBuiltinComponent,
   getComponentPins,
   getComponentSize,
+  getComponentBaseSize,
+  getPinLocalOffset,
+  getPinDirectionVector,
+  normalizeRotation,
   getPinPosition,
   logicValueLabel,
   stepLogicProject,
@@ -68,6 +72,27 @@ interface LogicClipboard {
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STORAGE_KEY = "st841.logic-editor.project.v1";
 const GRID_SIZE = 20;
+const BUBBLE_RADIUS = 6;
+/** How far a wire runs straight out of a pin before it is allowed to turn. */
+const PIN_LEAD = 12;
+/** Snap distance, in world units, for the alignment guides shown while dragging. */
+const ALIGN_TOLERANCE = 6;
+
+/**
+ * IEC 60617 qualifying symbols. The rectangle is identical for every gate;
+ * only this label distinguishes them.
+ */
+const DIN_QUALIFIER: Partial<Record<LogicComponentKind, string>> = {
+  AND: "&",
+  NAND: "&",
+  OR: "\u22651",
+  NOR: "\u22651",
+  XOR: "=1",
+  XNOR: "=1",
+  NOT: "1",
+  BUFFER: "1",
+  TRISTATE: "1",
+};
 const MIN_VIEWPORT_WIDTH = 420;
 const MAX_VIEWPORT_WIDTH = 16800;
 const PIN_OPTIONS = Array.from({ length: 4 }, (_, port) =>
@@ -96,6 +121,7 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
   let marqueeState: MarqueeState | null = null;
   let marqueeRect: SVGRectElement | null = null;
   let dragFramePending = false;
+  let alignmentGuides: { vertical: number[]; horizontal: number[] } = { vertical: [], horizontal: [] };
   let preDragProject: LogicProject | null = null;
   let panState: { x: number; y: number; startX: number; startY: number } | null = null;
   let viewport = { x: 0, y: 0, width: 1400, height: 900 };
@@ -654,7 +680,22 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     }
     clearPinHover();
     if (!dragState) return;
-    moveSelectedComponents(wireCursor.x - dragState.start.x, wireCursor.y - dragState.start.y);
+    // Snap on every frame rather than only on release: in Multisim the symbol
+    // tracks the grid as you move it, so what you see mid-drag is exactly
+    // where it lands. Snapping the *anchor* component and moving the rest by
+    // the same delta keeps a multi-selection rigid.
+    const rawDx = wireCursor.x - dragState.start.x;
+    const rawDy = wireCursor.y - dragState.start.y;
+    const anchor = preDragProject?.circuits[currentCircuitId]?.components
+      .find((item) => item.id === dragState!.componentIds[0]);
+    let dx = rawDx;
+    let dy = rawDy;
+    if (anchor) {
+      dx = snap(anchor.x + rawDx) - anchor.x;
+      dy = snap(anchor.y + rawDy) - anchor.y;
+    }
+    moveSelectedComponents(dx, dy);
+    alignmentGuides = computeAlignmentGuides();
     if (!dragFramePending) {
       dragFramePending = true;
       window.requestAnimationFrame(() => {
@@ -706,6 +747,7 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     preDragProject = null;
     dragState = null;
     dragFramePending = false;
+    alignmentGuides = { vertical: [], horizontal: [] };
     panState = null;
     clearPinHover();
     renderCanvas();
@@ -717,7 +759,7 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     const source = currentCircuit().components.find((item) => item.id === pendingWire!.componentId);
     if (!source) return;
     const from = getPinPosition(source, pendingWire.pinId, project);
-    wirePreviewPath.setAttribute("d", liveWirePath(from, wireCursor));
+    wirePreviewPath.setAttribute("d", liveWirePath(from, wireCursor, getPinDirectionVector(source, pendingWire.pinId, project)));
   }
 
   function endpointDirection(endpoint: WireEndpoint): "input" | "output" | null {
@@ -737,7 +779,11 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     if (!wire || !fromComponent || !toComponent) return false;
     const from = getPinPosition(fromComponent, wire.from.pinId, project);
     const to = getPinPosition(toComponent, wire.to.pinId, project);
-    const bends = wireRoute(wire, from, to).bends;
+    const bends = wireRoute(
+      wire, from, to,
+      getPinDirectionVector(fromComponent, wire.from.pinId, project),
+      getPinDirectionVector(toComponent, wire.to.pinId, project),
+    ).bends;
     if (!Number.isInteger(pointIndex) || !bends[pointIndex]) return false;
     const segmentCandidates: Array<[number, number]> = [];
     if (pointIndex + 1 < bends.length) segmentCandidates.push([pointIndex, pointIndex + 1]);
@@ -808,7 +854,11 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     if (!group || !fromComponent || !toComponent) return;
     const from = getPinPosition(fromComponent, wire.from.pinId, project);
     const to = getPinPosition(toComponent, wire.to.pinId, project);
-    const route = wireRoute(wire, from, to);
+    const route = wireRoute(
+      wire, from, to,
+      getPinDirectionVector(fromComponent, wire.from.pinId, project),
+      getPinDirectionVector(toComponent, wire.to.pinId, project),
+    );
     group.querySelectorAll<SVGPathElement>(".logicWire, .logicWireHit").forEach((path) => path.setAttribute("d", route.path));
     const stroke = group.querySelector<SVGPathElement>(".logicWire");
     if (stroke) {
@@ -899,7 +949,13 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
         const from = currentCircuit().components.find((item) => item.id === wire.from.componentId);
         const to = currentCircuit().components.find((item) => item.id === wire.to.componentId);
         if (!from || !to) continue;
-        const route = wireRoute(wire, getPinPosition(from, wire.from.pinId, project), getPinPosition(to, wire.to.pinId, project));
+        const route = wireRoute(
+          wire,
+          getPinPosition(from, wire.from.pinId, project),
+          getPinPosition(to, wire.to.pinId, project),
+          getPinDirectionVector(from, wire.from.pinId, project),
+          getPinDirectionVector(to, wire.to.pinId, project),
+        );
         if (routeIntersectsRect(route.points, bounds)) selectedWireIds.add(wire.id);
       }
     }
@@ -929,7 +985,64 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     const before = preDragProject.circuits[currentCircuitId]?.components.find((item) => item.id === firstId);
     const current = currentCircuit().components.find((item) => item.id === firstId);
     if (!before || !current) return;
+    // Positions are already snapped live during the drag; this only settles
+    // any residue (for example after an alignment guide nudged the anchor).
     moveSelectedComponents(snap(current.x) - before.x, snap(current.y) - before.y);
+  }
+
+  /**
+   * Edges and centre lines that the dragged selection currently shares with a
+   * stationary component, within ALIGN_TOLERANCE. Multisim draws these while
+   * you move a part; they make it easy to line a row of gates up by eye.
+   */
+  function computeAlignmentGuides(): { vertical: number[]; horizontal: number[] } {
+    const vertical = new Set<number>();
+    const horizontal = new Set<number>();
+    if (!dragState) return { vertical: [], horizontal: [] };
+    const moving = new Set(dragState.componentIds);
+    const components = currentCircuit().components;
+    const others = components.filter((item) => !moving.has(item.id));
+    if (!others.length) return { vertical: [], horizontal: [] };
+
+    const anchorsOf = (component: LogicComponent) => {
+      const size = getComponentSize(component, project);
+      return {
+        xs: [component.x, component.x + size.width / 2, component.x + size.width],
+        ys: [component.y, component.y + size.height / 2, component.y + size.height],
+      };
+    };
+
+    for (const component of components) {
+      if (!moving.has(component.id)) continue;
+      const self = anchorsOf(component);
+      for (const other of others) {
+        const target = anchorsOf(other);
+        for (const x of self.xs) {
+          for (const candidate of target.xs) {
+            if (Math.abs(x - candidate) <= ALIGN_TOLERANCE) vertical.add(candidate);
+          }
+        }
+        for (const y of self.ys) {
+          for (const candidate of target.ys) {
+            if (Math.abs(y - candidate) <= ALIGN_TOLERANCE) horizontal.add(candidate);
+          }
+        }
+      }
+    }
+    return { vertical: [...vertical], horizontal: [...horizontal] };
+  }
+
+  /** Rotate the current selection by 90 degrees clockwise (Multisim: Ctrl+R). */
+  function rotateSelection(): void {
+    if (!selectedComponentIds.size) return;
+    snapshot();
+    for (const component of currentCircuit().components) {
+      if (!selectedComponentIds.has(component.id)) continue;
+      component.rotation = normalizeRotation((component.rotation ?? 0) + 90);
+    }
+    persistProject();
+    renderAll();
+    updateStatus();
   }
 
   function adjustDraggedWireBends(beforeCircuit: CircuitDefinition | undefined, selected: Set<string>, dx: number, dy: number): void {
@@ -1248,8 +1361,8 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     svg.innerHTML = "";
     const defs = svgElement("defs");
     defs.innerHTML = `
-      <pattern id="logicGridSmall" width="20" height="20" patternUnits="userSpaceOnUse"><rect width="20" height="20" fill="#c6ced8"/><circle cx="1" cy="1" r="1.3" fill="#727f91"/></pattern>
-      <pattern id="logicGridLarge" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#logicGridSmall)"/><path d="M100 0H0V100" fill="none" stroke="#98a4b3" stroke-width="1"/></pattern>
+      <pattern id="logicGridSmall" width="20" height="20" patternUnits="userSpaceOnUse"><rect width="20" height="20" fill="#f4f6f8"/><circle cx="1" cy="1" r="1" fill="#c2cad4"/></pattern>
+      <pattern id="logicGridLarge" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#logicGridSmall)"/><path d="M100 0H0V100" fill="none" stroke="#d8dee6" stroke-width="1"/></pattern>
       <filter id="logicShadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity=".18"/></filter>
     `;
     svg.appendChild(defs);
@@ -1262,7 +1375,10 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
       const source = circuit.components.find((item) => item.id === pendingWire!.componentId);
       if (source) {
         const from = getPinPosition(source, pendingWire.pinId, project);
-        const preview = svgElement("path", { d: liveWirePath(from, wireCursor), class: "logicWirePreview" });
+        const preview = svgElement("path", {
+          d: liveWirePath(from, wireCursor, getPinDirectionVector(source, pendingWire.pinId, project)),
+          class: "logicWirePreview",
+        });
         wirePreviewPath = preview;
         wireLayer.appendChild(preview);
       }
@@ -1274,6 +1390,22 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     const componentLayer = svgElement("g", { class: "logicComponentLayer" });
     for (const component of circuit.components) componentLayer.appendChild(renderComponent(component));
     svg.appendChild(componentLayer);
+
+    if (alignmentGuides.vertical.length || alignmentGuides.horizontal.length) {
+      const guides = svgElement("g", { class: "logicGuideLayer" });
+      const span = Math.max(viewport.width, viewport.height) * 2;
+      for (const x of alignmentGuides.vertical) {
+        guides.appendChild(svgElement("line", {
+          x1: x, y1: viewport.y - span, x2: x, y2: viewport.y + span, class: "logicAlignGuide",
+        }));
+      }
+      for (const y of alignmentGuides.horizontal) {
+        guides.appendChild(svgElement("line", {
+          x1: viewport.x - span, y1: y, x2: viewport.x + span, y2: y, class: "logicAlignGuide",
+        }));
+      }
+      svg.appendChild(guides);
+    }
 
     if (marqueeState) {
       marqueeRect = svgElement("rect", { class: "logicMarquee" });
@@ -1294,7 +1426,11 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     if (!fromComponent || !toComponent) return group;
     const from = getPinPosition(fromComponent, wire.from.pinId, project);
     const to = getPinPosition(toComponent, wire.to.pinId, project);
-    const route = wireRoute(wire, from, to);
+    const route = wireRoute(
+      wire, from, to,
+      getPinDirectionVector(fromComponent, wire.from.pinId, project),
+      getPinDirectionVector(toComponent, wire.to.pinId, project),
+    );
     const conflict = wireHasError(wire);
     const hit = svgElement("path", { d: route.path, class: "logicWireHit", "data-wire-id": wire.id });
     const path = svgElement("path", { d: route.path, class: `logicWire${conflict ? " conflict" : ""}`, "data-wire-id": wire.id });
@@ -1329,16 +1465,26 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     const selected = selectedComponentIds.has(component.id);
     if (selected) group.appendChild(svgElement("rect", { x: -8, y: -8, width: size.width + 16, height: size.height + 16, rx: 10, class: "logicSelectionBox" }));
 
-    if (component.kind === "SEVEN_SEG") renderSevenSegment(group, component, size);
-    else if (component.kind === "HEX_DISPLAY") renderHexDisplay(group, component, size);
-    else if (["AND", "OR", "NAND", "NOR", "XOR", "XNOR", "NOT", "BUFFER", "TRISTATE"].includes(component.kind)) renderGateBody(group, component, size);
-    else renderBlockBody(group, component, size);
+    // The body is drawn in unrotated coordinates inside a rotated sub-group,
+    // so each renderer stays rotation-agnostic. Pins and their labels are
+    // drawn outside that group, in placed coordinates, so text never ends up
+    // upside down the way it does when you rotate the whole symbol.
+    const base = getComponentBaseSize(component, project);
+    const rotation = normalizeRotation(component.rotation);
+    const body = svgElement("g", { class: "logicComponentBody", transform: rotationTransform(rotation, base) });
+    group.appendChild(body);
+
+    if (component.kind === "SEVEN_SEG") renderSevenSegment(body, component, base);
+    else if (component.kind === "HEX_DISPLAY") renderHexDisplay(body, component, base);
+    else if (["AND", "OR", "NAND", "NOR", "XOR", "XNOR", "NOT", "BUFFER", "TRISTATE"].includes(component.kind)) renderGateBody(body, component, base);
+    else renderBlockBody(body, component, base);
 
     const pins = getComponentPins(component, project);
     for (const pin of pins) {
       const absolute = getPinPosition(component, pin.id, project);
       const x = absolute.x - component.x;
       const y = absolute.y - component.y;
+      const outward = getPinDirectionVector(component, pin.id, project);
       const value = evaluation.pinValues.get(`${component.id}:${pin.id}`) ?? "Z";
       const pinGroup = svgElement("g", {
         class: `logicPinGroup ${pin.direction}`,
@@ -1353,10 +1499,13 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
         "data-pin": pin.id,
         "data-component-id": component.id,
       });
+      // Per DIN the pin name sits inside the body, on the pin's own row,
+      // reading horizontally. Offsetting along the inward normal puts it in
+      // the right place for any rotation.
       const label = svgElement("text", {
-        x: pin.direction === "input" ? x + 12 : x - 12,
-        y: y - 8,
-        "text-anchor": pin.direction === "input" ? "start" : "end",
+        x: x - outward.x * 18,
+        y: y - outward.y * 18 + (outward.y === 0 ? 4 : 0),
+        "text-anchor": outward.x > 0 ? "end" : outward.x < 0 ? "start" : "middle",
         class: "logicPinLabel",
         "data-pin": pin.id,
         "data-component-id": component.id,
@@ -1368,66 +1517,70 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     return group;
   }
 
+  /**
+   * Transform that maps unrotated body space into the placed bounding box.
+   * Mirrors `rotateLocalPoint` in logicCircuit.ts — keep the two in step.
+   */
+  function rotationTransform(rotation: 0 | 90 | 180 | 270, base: { width: number; height: number }): string {
+    switch (rotation) {
+      case 90:
+        return `translate(${base.height} 0) rotate(90)`;
+      case 180:
+        return `translate(${base.width} ${base.height}) rotate(180)`;
+      case 270:
+        return `translate(0 ${base.width}) rotate(270)`;
+      default:
+        return "translate(0 0)";
+    }
+  }
+
   function renderGateBody(group: SVGElement, component: LogicComponent, size: { width: number; height: number }): void {
+    // DIN/IEC 60617 style: every gate is the same rectangle, and the function
+    // is named by a qualifying symbol inside it (& for AND, >=1 for OR, =1 for
+    // XOR). Negation is an open bubble on the output lead. This is the
+    // notation used in Ukrainian coursework, and it keeps every gate the same
+    // silhouette so a schematic reads as a tidy grid rather than mixed blobs.
     const bubble = component.kind === "NAND" || component.kind === "NOR" || component.kind === "XNOR" || component.kind === "NOT";
-    const isTriangle = component.kind === "NOT" || component.kind === "BUFFER" || component.kind === "TRISTATE";
-    const margin = 8;
+    const margin = 10;
     const left = margin;
-    const right = size.width - margin - (bubble ? 12 : 0);
+    const right = size.width - margin - BUBBLE_RADIUS * 2;
     const top = margin;
     const bottom = size.height - margin;
     const midY = size.height / 2;
-    const width = right - left;
-    const height = bottom - top;
-    const ansiPath = (): string => {
-      if (component.kind === "AND" || component.kind === "NAND") {
-        const stem = left + width * 0.46;
-        return `M ${left} ${top} H ${stem} A ${height / 2} ${height / 2} 0 0 1 ${stem} ${bottom} H ${left} Z`;
-      }
-      if (component.kind === "OR" || component.kind === "NOR" || component.kind === "XOR" || component.kind === "XNOR") {
-        const lip = left + width * 0.1;
-        const nose = right;
-        const waist = left + width * 0.26;
-        return `M ${lip} ${top} C ${left + width * 0.36} ${top} ${left + width * 0.66} ${top + height * 0.08} ${nose} ${midY} C ${left + width * 0.66} ${bottom - height * 0.08} ${left + width * 0.36} ${bottom} ${lip} ${bottom} C ${waist} ${bottom - height * 0.28} ${waist} ${top + height * 0.28} ${lip} ${top} Z`;
-      }
-      return `M ${left} ${top} L ${right} ${midY} L ${left} ${bottom} Z`;
-    };
 
-    if (component.kind === "XOR" || component.kind === "XNOR") {
-      const arcLeft = left - 8;
-      const arcMid = left + width * 0.08;
-      group.appendChild(svgElement("path", {
-        d: `M ${arcLeft} ${top} C ${arcMid} ${top + height * 0.28} ${arcMid} ${bottom - height * 0.28} ${arcLeft} ${bottom}`,
-        class: "logicGateAccent",
+    // Pin leads first, so the body paints over their inner ends.
+    for (const pin of getComponentPins(component, project)) {
+      const local = getPinLocalOffset(component, pin.id, project);
+      if (pin.direction === "input") {
+        group.appendChild(svgElement("line", { x1: local.x, y1: local.y, x2: left, y2: local.y, class: "logicPinLeg" }));
+      } else {
+        group.appendChild(svgElement("line", {
+          x1: right + (bubble ? BUBBLE_RADIUS * 2 : 0), y1: local.y, x2: local.x, y2: local.y, class: "logicPinLeg",
+        }));
+      }
+    }
+
+    group.appendChild(svgElement("rect", {
+      x: left, y: top, width: right - left, height: bottom - top,
+      class: "logicGateBody",
+    }));
+
+    if (bubble) {
+      group.appendChild(svgElement("circle", {
+        cx: right + BUBBLE_RADIUS, cy: midY, r: BUBBLE_RADIUS, class: "logicInversionBubble",
       }));
     }
 
-    for (const pin of getComponentPins(component, project)) {
-      const point = getPinPosition(component, pin.id, project);
-      const x = point.x - component.x;
-      const y = point.y - component.y;
-      if (pin.direction === "input") {
-        group.appendChild(svgElement("line", { x1: x, y1: y, x2: left + 10, y2: y, class: "logicPinLeg" }));
-      } else {
-        group.appendChild(svgElement("line", { x1: right + (bubble ? 12 : 0), y1: y, x2: x, y2: y, class: "logicPinLeg" }));
-      }
+    const qualifier = DIN_QUALIFIER[component.kind];
+    if (qualifier) {
+      const text = svgElement("text", {
+        x: (left + right) / 2, y: top + 20, "text-anchor": "middle", class: "logicGateSymbol",
+      });
+      text.textContent = qualifier;
+      group.appendChild(text);
     }
 
-    if (isTriangle) {
-      const body = svgElement("path", { d: ansiPath(), class: "logicGateBody", filter: "url(#logicShadow)" });
-      group.appendChild(body);
-      if (bubble) group.appendChild(svgElement("circle", { cx: right + 6, cy: midY, r: 6, class: "logicInversionBubble" }));
-    } else {
-      const body = svgElement("path", { d: ansiPath(), class: "logicGateBody", filter: "url(#logicShadow)" });
-      group.appendChild(body);
-      if (bubble) group.appendChild(svgElement("circle", { cx: right + 6, cy: midY, r: 6, class: "logicInversionBubble" }));
-    }
-    if (component.kind === "TRISTATE") {
-      const enable = svgElement("text", { x: left + 12, y: bottom - 8, "text-anchor": "start", class: "logicGateSymbol subtle" });
-      enable.textContent = "EN";
-      group.appendChild(enable);
-    }
-    const label = svgElement("text", { x: size.width / 2, y: -6, "text-anchor": "middle", class: "logicComponentLabel" });
+    const label = svgElement("text", { x: size.width / 2, y: -8, "text-anchor": "middle", class: "logicComponentLabel" });
     label.textContent = component.label;
     group.appendChild(label);
   }
@@ -1442,14 +1595,14 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
     };
     const block = (radius = 7) => group.appendChild(svgElement("rect", {
       x: 7, y: 7, width: size.width - 14, height: size.height - 14, rx: radius,
-      class: "logicBlockBody", filter: "url(#logicShadow)",
+      class: "logicBlockBody",
     }));
 
     if (component.kind === "MUX4") {
       const right = size.width - 14;
       group.appendChild(svgElement("path", {
         d: `M 18 8 L ${right} 24 L ${right} ${size.height - 24} L 18 ${size.height - 8} Z`,
-        class: "logicBlockBody", filter: "url(#logicShadow)",
+        class: "logicBlockBody",
       }));
       text("MUX", size.width * 0.58, size.height / 2 - 3);
       text("4 : 1", size.width * 0.58, size.height / 2 + 15, "logicBlockCaption");
@@ -1465,7 +1618,7 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
       }
     } else if (component.kind === "FULL_ADDER") {
       const radius = Math.min(size.width, size.height) / 2 - 11;
-      group.appendChild(svgElement("circle", { cx: size.width / 2, cy: size.height / 2, r: radius, class: "logicBlockBody", filter: "url(#logicShadow)" }));
+      group.appendChild(svgElement("circle", { cx: size.width / 2, cy: size.height / 2, r: radius, class: "logicBlockBody" }));
       text("Σ", size.width / 2, size.height / 2 + 9, "logicAdderSymbol");
       text("A+B+Ci", size.width / 2, size.height / 2 + 25, "logicBlockCaption");
     } else if (component.kind === "DFF") {
@@ -1511,7 +1664,7 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
       const points = component.kind === "PORT_IN"
         ? `7,12 ${size.width - 25},12 ${size.width - 7},${size.height / 2} ${size.width - 25},${size.height - 12} 7,${size.height - 12}`
         : `${size.width - 7},12 25,12 7,${size.height / 2} 25,${size.height - 12} ${size.width - 7},${size.height - 12}`;
-      group.appendChild(svgElement("polygon", { points, class: "logicBlockBody", filter: "url(#logicShadow)" }));
+      group.appendChild(svgElement("polygon", { points, class: "logicBlockBody" }));
       text(component.kind === "PORT_IN" ? "IN" : "OUT", size.width / 2, size.height / 2 + 7, "logicBlockSymbol");
     } else {
       block();
@@ -1558,25 +1711,30 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
   }
 
   function renderSevenSegment(group: SVGElement, component: LogicComponent, size: { width: number; height: number }): void {
-    group.appendChild(svgElement("rect", { x: 4, y: 4, width: size.width - 8, height: size.height - 8, rx: 10, class: "logicSevenBody", filter: "url(#logicShadow)" }));
+    group.appendChild(svgElement("rect", { x: 4, y: 4, width: size.width - 8, height: size.height - 8, rx: 10, class: "logicSevenBody" }));
     const active = (pin: string) => (evaluation.pinValues.get(`${component.id}:${pin}`) ?? "Z") === 1;
+    // Segment geometry, generated on a uniform 14-unit stroke with mitred
+    // ends. The previous artwork used 8-unit horizontal bars against 16-unit
+    // vertical ones, which made every digit look lopsided.
     const segments: Record<string, string> = {
-      a: "M35 24 H83 L75 32 H43 Z",
-      b: "M88 29 L96 37 V73 L88 80 L80 72 V39 Z",
-      c: "M88 88 L96 95 V131 L88 139 L80 130 V97 Z",
-      d: "M35 144 H83 L75 152 H43 Z",
-      e: "M22 88 L30 97 V130 L22 139 L14 131 V95 Z",
-      f: "M22 29 L30 39 V72 L22 80 L14 73 V37 Z",
-      g: "M35 82 H83 L75 90 H43 Z",
+      a: "M 37 15 H 81 L 88 22 L 81 29 H 37 L 30 22 Z",
+      b: "M 84 32 V 74 L 91 81 L 98 74 V 32 L 91 25 Z",
+      c: "M 84 94 V 136 L 91 143 L 98 136 V 94 L 91 87 Z",
+      d: "M 37 139 H 81 L 88 146 L 81 153 H 37 L 30 146 Z",
+      e: "M 20 94 V 136 L 27 143 L 34 136 V 94 L 27 87 Z",
+      f: "M 20 32 V 74 L 27 81 L 34 74 V 32 L 27 25 Z",
+      g: "M 37 77 H 81 L 88 84 L 81 91 H 37 L 30 84 Z",
     };
     for (const [name, d] of Object.entries(segments)) group.appendChild(svgElement("path", { d, class: `logicSegment${active(name) ? " active" : ""}` }));
+    // Decimal point: always drawn dim, since this component exposes no dp pin.
+    group.appendChild(svgElement("circle", { cx: 105, cy: 146, r: 6, class: "logicSegment" }));
     const label = svgElement("text", { x: size.width / 2, y: -6, "text-anchor": "middle", class: "logicComponentLabel" });
     label.textContent = component.label;
     group.appendChild(label);
   }
 
   function renderHexDisplay(group: SVGElement, component: LogicComponent, size: { width: number; height: number }): void {
-    group.appendChild(svgElement("rect", { x: 4, y: 4, width: size.width - 8, height: size.height - 8, rx: 10, class: "logicHexBody", filter: "url(#logicShadow)" }));
+    group.appendChild(svgElement("rect", { x: 4, y: 4, width: size.width - 8, height: size.height - 8, rx: 10, class: "logicHexBody" }));
     const bits = [0, 1, 2, 3].map((index) => evaluation.pinValues.get(`${component.id}:b${index}`) ?? "Z");
     const valid = bits.every((value) => value === 0 || value === 1);
     const value = valid ? bits.reduce<number>((sum, bit, index) => sum | (Number(bit) << index), 0) : null;
@@ -2202,6 +2360,9 @@ export function createLogicEditor(options: LogicEditorOptions): LogicEditorHandl
       clearPinHover();
       setTool("select");
       renderCanvas();
+    } else if (!editing && key === "r") {
+      event.preventDefault();
+      rotateSelection();
     } else if (!editing && key === "v") {
       setTool("select");
     } else if (!editing && key === "w") {
@@ -2503,18 +2664,60 @@ function svgElement<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<
   return node;
 }
 
-function defaultWireBends(from: WirePoint, to: WirePoint): WirePoint[] {
-  if (nearlyEqual(from.x, to.x) || nearlyEqual(from.y, to.y)) return [];
-  const midX = snap((from.x + to.x) / 2);
-  return [{ x: midX, y: from.y }, { x: midX, y: to.y }];
+/**
+ * Default orthogonal route between two pins.
+ *
+ * When the pin directions are known the wire first runs a short straight lead
+ * out of each pin, then turns — so a wire never sprouts sideways out of a
+ * symbol's face. That matters once components can be rotated: without the
+ * leads, a wire leaving a pin that faces up would immediately cut back across
+ * the body.
+ */
+function defaultWireBends(
+  from: WirePoint,
+  to: WirePoint,
+  fromDir?: { x: number; y: number },
+  toDir?: { x: number; y: number },
+): WirePoint[] {
+  if (!fromDir || !toDir) {
+    if (nearlyEqual(from.x, to.x) || nearlyEqual(from.y, to.y)) return [];
+    const midX = snap((from.x + to.x) / 2);
+    return [{ x: midX, y: from.y }, { x: midX, y: to.y }];
+  }
+
+  const start = { x: from.x + fromDir.x * PIN_LEAD, y: from.y + fromDir.y * PIN_LEAD };
+  const end = { x: to.x + toDir.x * PIN_LEAD, y: to.y + toDir.y * PIN_LEAD };
+  const points: WirePoint[] = [start];
+
+  const fromHorizontal = fromDir.y === 0;
+  const toHorizontal = toDir.y === 0;
+  if (fromHorizontal && toHorizontal) {
+    // Both leads horizontal: meet on a shared vertical channel.
+    const midX = snap((start.x + end.x) / 2);
+    if (!nearlyEqual(start.y, end.y)) points.push({ x: midX, y: start.y }, { x: midX, y: end.y });
+  } else if (!fromHorizontal && !toHorizontal) {
+    const midY = snap((start.y + end.y) / 2);
+    if (!nearlyEqual(start.x, end.x)) points.push({ x: start.x, y: midY }, { x: end.x, y: midY });
+  } else if (fromHorizontal) {
+    points.push({ x: end.x, y: start.y });
+  } else {
+    points.push({ x: start.x, y: end.y });
+  }
+
+  points.push(end);
+  // Drop consecutive duplicates so the path stays minimal.
+  return points.filter((point, index) =>
+    index === 0 || !nearlyEqual(point.x, points[index - 1].x) || !nearlyEqual(point.y, points[index - 1].y));
 }
 
 function wireRoute(
   wire: Pick<LogicWire, "bendPoints">,
   from: WirePoint,
   to: WirePoint,
+  fromDir?: { x: number; y: number },
+  toDir?: { x: number; y: number },
 ): { path: string; bends: WirePoint[]; points: WirePoint[] } {
-  const stored = wire.bendPoints === undefined ? defaultWireBends(from, to) : wire.bendPoints;
+  const stored = wire.bendPoints === undefined ? defaultWireBends(from, to, fromDir, toDir) : wire.bendPoints;
   const bends = stored
     .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))
     .map((point) => ({ x: point.x, y: point.y }));
@@ -2537,8 +2740,15 @@ function wireRoute(
   return { path, bends, points };
 }
 
-function liveWirePath(from: WirePoint, to: WirePoint): string {
-  return wireRoute({ bendPoints: defaultWireBends(from, to) }, from, to).path;
+function liveWirePath(
+  from: WirePoint,
+  to: WirePoint,
+  fromDir?: { x: number; y: number },
+): string {
+  // While dragging a new wire the far end follows the cursor, which has no
+  // pin direction of its own; approach it opposite to the source lead.
+  const toDir = fromDir ? { x: -fromDir.x, y: -fromDir.y } : undefined;
+  return wireRoute({ bendPoints: defaultWireBends(from, to, fromDir, toDir) }, from, to, fromDir, toDir).path;
 }
 
 function nearlyEqual(a: number, b: number): boolean {

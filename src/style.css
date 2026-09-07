@@ -14,6 +14,83 @@
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
 }
 
+/* The next theme expands from the theme button instead of cross-fading the whole page. */
+:root[data-theme-reveal]::view-transition-old(root) {
+  animation: none;
+  z-index: 1;
+}
+
+:root[data-theme-reveal]::view-transition-new(root) {
+  animation: theme-reveal-wave 1s cubic-bezier(0.22, 0.8, 0.18, 1) both;
+  mix-blend-mode: normal;
+  z-index: 2;
+}
+
+@keyframes theme-reveal-wave {
+  from {
+    clip-path: circle(0 at var(--theme-reveal-x, 50vw) var(--theme-reveal-y, 50vh));
+  }
+  to {
+    clip-path: circle(var(--theme-reveal-radius, 150vmax) at var(--theme-reveal-x, 50vw) var(--theme-reveal-y, 50vh));
+  }
+}
+
+/* Fallback for browsers without View Transitions: an unobtrusive expanding ring. */
+.themeRipple {
+  position: fixed;
+  z-index: 1000;
+  top: var(--theme-ripple-y);
+  left: var(--theme-ripple-x);
+  width: var(--theme-ripple-size);
+  height: var(--theme-ripple-size);
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.015);
+  transform-origin: center;
+}
+
+.themeRipple.light {
+  color: rgba(237, 246, 255, 0.94);
+  background: radial-gradient(circle, rgba(232, 241, 249, 0.20), transparent 62%);
+  box-shadow: 0 0 22px rgba(223, 238, 250, 0.72);
+}
+
+.themeRipple.dark {
+  color: rgba(50, 78, 103, 0.86);
+  background: radial-gradient(circle, rgba(22, 38, 54, 0.22), transparent 62%);
+  box-shadow: 0 0 22px rgba(12, 22, 31, 0.66);
+}
+
+.themeRipple.is-running {
+  animation: theme-ripple-ring 1s cubic-bezier(0.16, 0.82, 0.2, 1) both;
+}
+
+@keyframes theme-ripple-ring {
+  0% {
+    opacity: 0.9;
+    transform: translate(-50%, -50%) scale(0.015);
+  }
+  72% {
+    opacity: 0.42;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme-reveal]::view-transition-new(root) {
+    animation-duration: 1ms;
+  }
+
+  .themeRipple.is-running {
+    animation-duration: 1ms;
+  }
+}
+
 html,
 body {
   margin: 0;
@@ -1374,6 +1451,20 @@ input {
   pointer-events: auto;
 }
 
+/* In the standalone scope, the screen owns all spare height. This keeps the
+   control band at the bottom without leaving an empty area below it. */
+.motorShell.scope-only .multisimScopeDrawer {
+  display: grid;
+  grid-template-rows: 44px minmax(170px, 1fr) 112px auto;
+  overflow: hidden;
+}
+
+.motorShell.scope-only .multisimScopeScreen {
+  height: auto;
+  min-height: 0;
+  align-self: stretch;
+}
+
 .motorShell.scope-only .motorInfoCard {
   display: none;
 }
@@ -1969,6 +2060,382 @@ input {
 
 .scopeActionBtn {
   min-width: 100%;
+}
+
+/* Oscilloscope: compact modern instrument panel, using the app's graphite/blue-grey palette. */
+.multisimScopeDrawer {
+  --scope-shell: #131e2a;
+  --scope-panel: #1a2735;
+  --scope-panel-raised: #223244;
+  --scope-field: #0f1923;
+  --scope-line: #344b60;
+  --scope-line-soft: #2a3d50;
+  --scope-text: #e4edf5;
+  --scope-muted: #9caebe;
+  --scope-accent: #42d5cf;
+  --scope-accent-strong: #169e9e;
+  --scope-accent-soft: rgba(66, 213, 207, 0.14);
+  --scope-screen: #000;
+  color: var(--scope-text);
+  background: var(--scope-shell);
+  border-left-color: var(--scope-line);
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.motorModal.scope-only-mode .scopeDrawer {
+  box-shadow: -10px 0 24px rgba(5, 12, 18, 0.28);
+}
+
+.scopeWindowCaption {
+  height: 44px;
+  padding: 0 13px;
+  background: var(--scope-panel);
+  color: var(--scope-text);
+  border-bottom: 1px solid var(--scope-line);
+}
+
+.scopeWindowTitle {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.scopeCaptionLeft {
+  gap: 14px;
+}
+
+.scopeTitleCluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.scopeTitleMark {
+  display: inline-grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border: 1px solid var(--scope-accent-strong);
+  border-radius: 4px;
+  background: var(--scope-accent-soft);
+  color: var(--scope-accent);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.scopeSourcePicker {
+  height: 26px;
+  max-width: 200px;
+  padding: 0 7px;
+  border: 1px solid var(--scope-line);
+  border-radius: 5px;
+  outline: none;
+  background: var(--scope-field);
+  color: var(--scope-text);
+  font-size: 11px;
+}
+
+.scopeSourcePicker:focus {
+  border-color: var(--scope-accent);
+  box-shadow: 0 0 0 2px var(--scope-accent-soft);
+}
+
+.scopeCaptionActions {
+  gap: 7px;
+}
+
+.scopeRunBtn {
+  min-width: 54px;
+  height: 26px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.scopeCaptionClose {
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--scope-muted);
+  font-size: 19px;
+}
+
+.scopeCaptionClose:hover {
+  border-color: var(--scope-line);
+  background: var(--scope-panel-raised);
+  color: var(--scope-text);
+}
+
+.multisimScopeScreen {
+  width: calc(100% - 28px);
+  height: min(38vh, 300px);
+  min-height: 170px;
+  margin: 14px 14px 10px;
+  border: 1px solid var(--scope-line);
+  border-radius: 5px;
+  background: var(--scope-screen);
+  clip-path: inset(0 round 5px);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.025);
+  flex: 0 0 auto;
+}
+
+.scopeInfoRowMain {
+  grid-template-columns: 130px minmax(270px, 1fr) 128px;
+  height: 112px;
+  min-height: 112px;
+  gap: 1px;
+  margin: 0 14px;
+  border: 1px solid var(--scope-line-soft);
+  border-radius: 5px 5px 0 0;
+  overflow: hidden;
+  background: var(--scope-line-soft);
+  flex: 0 0 112px;
+}
+
+.scopeCursorPad,
+.scopeReadoutPanel,
+.scopeUtilityPanel,
+.multisimControlGroup,
+.multisimScopeDrawer .motorInfoCard {
+  background: var(--scope-panel);
+  border: 0;
+  border-radius: 0;
+}
+
+.scopeCursorPad {
+  padding: 7px 8px 6px;
+}
+
+.scopeSubpanelTitle {
+  margin: 0 0 5px;
+  color: var(--scope-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.scopeCursorRow {
+  grid-template-columns: 45px 29px 29px;
+  gap: 5px;
+  min-height: 23px;
+  color: var(--scope-muted);
+  font-size: 10px;
+}
+
+.scopeReadoutPanel {
+  /* Heading + table header + all three cursor rows fit into the fixed measurement band. */
+  box-sizing: border-box;
+  height: 112px;
+  min-height: 0;
+  padding: 7px 0 0;
+  overflow: hidden;
+}
+
+.multisimReadoutTable {
+  color: var(--scope-text);
+  font-size: 10px;
+}
+
+.multisimReadoutTable th,
+.multisimReadoutTable td {
+  padding: 4px 8px;
+  border-bottom-color: var(--scope-line-soft);
+}
+
+.multisimReadoutTable td:first-child {
+  color: var(--scope-muted);
+}
+
+.multisimReadoutTable thead th {
+  background: transparent;
+  color: var(--scope-muted);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.scopeUtilityPanel {
+  padding: 7px;
+  gap: 5px;
+}
+
+.scopeExtTriggerRow {
+  color: var(--scope-muted);
+  font-size: 10px;
+}
+
+.scopeRadioDot {
+  width: 11px;
+  height: 11px;
+  border-color: var(--scope-line);
+  background: var(--scope-field);
+}
+
+.scopeRadioDot.active {
+  background: var(--scope-accent);
+  box-shadow: inset 0 0 0 3px var(--scope-panel);
+}
+
+.multisimControlStrip {
+  gap: 1px;
+  margin: 0 14px 12px;
+  padding: 1px;
+  border: 1px solid var(--scope-line-soft);
+  border-top: 0;
+  border-radius: 0 0 5px 5px;
+  background: var(--scope-line-soft);
+  flex: 0 0 auto;
+}
+
+.multisimScopeDrawer .motorInfoCard {
+  margin: 0 14px 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--scope-line-soft);
+  border-radius: 5px;
+  box-shadow: none;
+}
+
+.multisimScopeDrawer .motorInfoCard h3 {
+  color: var(--scope-text);
+  font-size: 11px;
+  font-weight: 650;
+  margin-bottom: 7px;
+}
+
+.multisimScopeDrawer .motorStatTile {
+  background: var(--scope-field);
+  border-color: var(--scope-line-soft);
+  border-radius: 4px;
+  padding: 6px 7px;
+}
+
+.multisimScopeDrawer .motorStatTile span {
+  color: var(--scope-muted);
+  font-size: 10px;
+}
+
+.multisimScopeDrawer .motorStatTile b {
+  color: var(--scope-text);
+  font-size: 13px;
+}
+
+.multisimControlGroup {
+  padding: 9px;
+}
+
+.scopeControlGroupTitle {
+  color: var(--scope-accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.scopeControlLine {
+  gap: 5px;
+  min-height: 24px;
+  margin-bottom: 5px;
+  color: var(--scope-muted);
+  font-size: 10px;
+}
+
+.scopeControlLabel {
+  width: 58px;
+  flex-basis: 58px;
+}
+
+.scopeSpinnerValue {
+  min-height: 24px;
+  padding: 3px 6px;
+  border-color: var(--scope-line);
+  border-radius: 4px;
+  background: var(--scope-field);
+  color: var(--scope-text);
+  font-size: 10px;
+}
+
+.scopeSpinnerButtons {
+  width: 18px;
+  min-width: 18px;
+  margin-left: 3px;
+}
+
+.scopeSpinnerBtn {
+  width: 18px;
+  min-width: 18px;
+  height: 11px;
+  border-color: var(--scope-line);
+  border-radius: 3px;
+  background: var(--scope-panel-raised);
+  color: var(--scope-text);
+}
+
+.scopeButtonRow,
+.scopeTinyRow {
+  gap: 5px;
+}
+
+.scopePushBtn,
+.scopeActionBtn {
+  height: 25px;
+  min-width: 25px;
+  padding: 0 8px;
+  border-color: var(--scope-line);
+  border-radius: 3px;
+  background: var(--scope-panel-raised);
+  color: var(--scope-text);
+  font-size: 10px;
+}
+
+.scopePushBtn:hover,
+.scopeActionBtn:hover {
+  border-color: var(--scope-accent-strong);
+  background: #294052;
+}
+
+.scopePushBtn.active,
+.scopeActionBtn.active {
+  border-color: var(--scope-accent-strong);
+  background: var(--scope-accent-soft);
+  color: var(--scope-accent);
+}
+
+.scopeRunBtn.active {
+  background: var(--scope-accent-strong);
+  border-color: var(--scope-accent);
+  color: #f7ffff;
+}
+
+.minimalShell[data-theme="light"] .multisimScopeDrawer {
+  --scope-shell: #e9eff4;
+  --scope-panel: #f4f7fa;
+  --scope-panel-raised: #e3ebf1;
+  --scope-field: #e7edf2;
+  --scope-line: #b8c7d2;
+  --scope-line-soft: #ccd7df;
+  --scope-text: #203346;
+  --scope-muted: #617589;
+  --scope-accent: #087e8b;
+  --scope-accent-strong: #137785;
+  --scope-accent-soft: rgba(8, 126, 139, 0.12);
+  --scope-screen: #fbfcfd;
+}
+
+.minimalShell[data-theme="light"] .scopePushBtn:hover,
+.minimalShell[data-theme="light"] .scopeActionBtn:hover {
+  background: #d7e3eb;
+}
+
+.minimalShell[data-theme="light"] .scopeRunBtn.active {
+  color: #fff;
 }
 
 body.panel-resizing {
@@ -2970,16 +3437,34 @@ body.panel-resizing {
   pointer-events: none;
 }
 
+/* DIN/IEC symbols are plain rectangles: crisp outline, no drop shadow, no
+   rounded corners. Keeping the stroke thin and uniform is what makes a sheet
+   read like a drawing instead of a diagram of boxes. */
 .logicGateBody,
 .logicBlockBody {
-  fill: #fbfcfd;
-  stroke: #3e4853;
-  stroke-width: 2;
+  fill: #ffffff;
+  stroke: #1f2933;
+  stroke-width: 1.8;
+  shape-rendering: geometricPrecision;
+}
+
+.logicComponentBody {
+  pointer-events: all;
+}
+
+/* Alignment guides shown while a component is being dragged. */
+.logicAlignGuide {
+  stroke: #e0629b;
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+  shape-rendering: crispEdges;
 }
 
 .logicComponent.selected .logicGateBody,
 .logicComponent.selected .logicBlockBody {
   stroke: #2c7fd4;
+  stroke-width: 2.2;
 }
 
 .logicGateAccent {
@@ -2995,9 +3480,9 @@ body.panel-resizing {
 
 .logicPinLeg {
   fill: none;
-  stroke: #3e4853;
-  stroke-width: 2;
-  stroke-linecap: round;
+  stroke: #1f2933;
+  stroke-width: 1.8;
+  stroke-linecap: square;
   pointer-events: none;
 }
 
@@ -3005,12 +3490,21 @@ body.panel-resizing {
   stroke: #2c7fd4;
 }
 
+/* The qualifying symbol (&, >=1, =1) is the entire identity of a DIN gate,
+   so it is centred and set in a plain face at a readable size. */
 .logicGateSymbol,
 .logicBlockSymbol {
-  fill: #182330;
-  font-weight: 800;
-  font-size: 21px;
+  fill: #1f2933;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 600;
+  font-size: 19px;
   pointer-events: none;
+}
+
+.logicGateSymbol.subtle {
+  font-size: 12px;
+  font-weight: 500;
+  fill: #57636f;
 }
 
 .logicGateSymbol.subtle {

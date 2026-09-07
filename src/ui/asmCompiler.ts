@@ -108,9 +108,14 @@ export function compileAsm(source: string): AsmCompileResult {
       }
       continue;
     }
-    const dataMatch = /^([A-Za-z_.$?][\w.$?]*)\s+data\s+(.+)$/i.exec(text);
-    if (dataMatch) {
-      declareConstant(dataMatch[1], dataMatch[2], lineNo, "DATA");
+    // A51 address-space symbol directives. They all define a numeric symbol;
+    // the space only documents intent in this flat code-image assembler, but
+    // accepting them lets standard listings and textbook sources assemble.
+    // `EXTRN CODE (sym)` / `PUBLIC ...` are linker directives, not symbol
+    // definitions, and must not be swallowed by the pattern below.
+    const spaceMatch = /^(?!extrn\b|extern\b|public\b|name\b|segment\b)([A-Za-z_.$?][\w.$?]*)\s+(data|idata|xdata|code)\s+(.+)$/i.exec(text);
+    if (spaceMatch) {
+      declareConstant(spaceMatch[1], spaceMatch[3], lineNo, spaceMatch[2].toUpperCase());
       continue;
     }
     const bitMatchDecl = /^([A-Za-z_.$?][\w.$?]*)\s+bit\s+(.+)$/i.exec(text);
@@ -260,10 +265,14 @@ export function compileAsm(source: string): AsmCompileResult {
   // already-generated code can be reported instead of silently overwriting it.
   const writtenBy = new Map<number, number>();
   const overlapReported = new Set<number>();
+  // Exact emitted length per statement, recorded here because it cannot be
+  // recovered reliably from the code image (adjacent statements merge).
+  const emittedSize = new Map<ParsedLine, number>();
   for (const entry of parsed) {
     pcToLine.push({ pc: entry.address & 0xffff, line: entry.line });
     const encoded = encodeInstruction(entry, labels, equ, diagnostics);
     if (!encoded) continue;
+    emittedSize.set(entry, encoded.length);
     encoded.forEach((byte, offset) => {
       const address = entry.address + offset;
       const previousLine = writtenBy.get(address);
@@ -279,6 +288,8 @@ export function compileAsm(source: string): AsmCompileResult {
       map.set(address, byte & 0xff);
     });
   }
+
+  diagnoseInterruptUsage(parsed, emittedSize, diagnostics);
 
   const bytes = flattenMap(map);
   const hex = toIntelHex(map);
@@ -813,7 +824,7 @@ function recordPreprocessorSymbols(line: AsmSourceLine, state: PreprocessorState
   }
   if (!text) return;
 
-  const constantMatch = /^([A-Za-z_.$?][\w.$?]*)\s+(equ|set|data|bit)\s+(.+)$/i.exec(text);
+  const constantMatch = /^(?!extrn\b|extern\b|public\b|name\b|segment\b)([A-Za-z_.$?][\w.$?]*)\s+(equ|set|data|idata|xdata|code|bit)\s+(.+)$/i.exec(text);
   const prefixMatch = /^(sbit|sfr16|sfr)\s+([A-Za-z_.$?][\w.$?]*)\s*=\s*(.+)$/i.exec(text);
   const postfixMatch = /^([A-Za-z_.$?][\w.$?]*)\s+(sfr16|sfr)\s+(?:=\s*)?(.+)$/i.exec(text);
   const name = constantMatch?.[1] ?? prefixMatch?.[2] ?? postfixMatch?.[1];
@@ -886,8 +897,13 @@ function substituteAsmIdentifiers(text: string, replace: (identifier: string, in
     if (/\d/.test(char)) {
       const numeric = /^(?:0x[0-9a-f]+|0b[01]+|[0-9a-f]+h|[01]+b|\d+)/i.exec(text.slice(index));
       if (numeric) {
-        output += numeric[0];
-        index += numeric[0].length;
+        // A dotted bit index directly after a number is part of the operand
+        // (A51 writes bit 0 of byte 20h as `20h.0`). Consuming it here keeps
+        // the local-label scanner from mistaking `.0` for a label reference.
+        const bitSuffix = /^\.\d+/.exec(text.slice(index + numeric[0].length));
+        const token = bitSuffix ? numeric[0] + bitSuffix[0] : numeric[0];
+        output += token;
+        index += token.length;
         continue;
       }
     }
@@ -1312,6 +1328,102 @@ function estimateSize(mnemonic: string, operands: string[], equ: ConstantMap): n
   }
 }
 
+// MCS-51 / ADuC841 interrupt vectors. Each gets 8 bytes before the next one.
+const INTERRUPT_VECTORS: ReadonlyArray<{ address: number; name: string }> = [
+  { address: 0x0003, name: "External 0 (INT0)" },
+  { address: 0x000b, name: "Timer 0" },
+  { address: 0x0013, name: "External 1 (INT1)" },
+  { address: 0x001b, name: "Timer 1" },
+  { address: 0x0023, name: "Serial port" },
+  { address: 0x002b, name: "Timer 2 / ADC" },
+];
+
+/**
+ * Two mistakes that assemble cleanly but break at run time:
+ *
+ *  1. A handler placed at an interrupt vector that returns with RET instead of
+ *     RETI. RET leaves the interrupt-in-progress flip-flop set, so that
+ *     priority level never fires again.
+ *  2. Straight-line code that runs past 0x0003 and covers a vector, which
+ *     silently corrupts the handler entry once interrupts are enabled.
+ */
+function diagnoseInterruptUsage(
+  parsed: ParsedLine[],
+  emittedSize: ReadonlyMap<ParsedLine, number>,
+  diagnostics: AsmDiagnostic[],
+): void {
+  const spanOf = (entry: ParsedLine): number => emittedSize.get(entry) ?? 0;
+  const vectorAddresses = new Set(INTERRUPT_VECTORS.map((vector) => vector.address));
+
+  // Only meaningful for a program that deliberately places code in the vector
+  // area. A bare snippet with no ORG is an isolated fragment being assembled
+  // for inspection, not a ROM image, so flagging it would be pure noise.
+  // ORG statements are consumed during parsing, so detect them by their
+  // effect: a program that positions code has either a non-zero start or a gap
+  // between statements. In a bare snippet the addresses are incidental (a
+  // two-line fragment reaching 0x0003 says nothing about the vector table),
+  // and warning about them would be pure noise.
+  const ordered = [...parsed].sort((a, b) => a.address - b.address);
+  const positionsCode =
+    ordered.length > 0 &&
+    (ordered[0].address !== 0 ||
+      // A statement landing exactly on a vector is a deliberate handler.
+      ordered.some((entry) => vectorAddresses.has(entry.address)) ||
+      ordered.some((entry, index) => {
+        if (index === 0) return false;
+        const previous = ordered[index - 1];
+        return entry.address > previous.address + spanOf(previous);
+      }) ||
+      // Code reaching past the vector table from 0x0000 is only meaningful
+      // when it is long enough to be a real image rather than a snippet.
+      // Measure the end of the last statement, not its start.
+      ordered[ordered.length - 1].address + spanOf(ordered[ordered.length - 1]) > 0x000b);
+  if (!positionsCode) return;
+
+  // --- 1. RET where RETI is required -------------------------------------
+  for (const vector of INTERRUPT_VECTORS) {
+    const startsHere = parsed.some((entry) => entry.address === vector.address && entry.mnemonic !== "org");
+    if (!startsHere) continue;
+    // Walk forward from the vector until the first return-like instruction.
+    const following = parsed
+      .filter((entry) => entry.address >= vector.address)
+      .sort((a, b) => a.address - b.address);
+    for (const entry of following) {
+      if (entry.mnemonic === "reti") break;
+      // A jump leads elsewhere; the handler body is not inline, so stop here.
+      if (entry.mnemonic === "ljmp" || entry.mnemonic === "sjmp" || entry.mnemonic === "ajmp" || entry.mnemonic === "jmp") break;
+      if (entry.mnemonic === "ret") {
+        diagnostics.push({
+          level: "warning",
+          line: entry.line,
+          message: `Handler at the ${vector.name} vector (${formatCodeAddress(vector.address)}) returns with RET; use RETI, otherwise this interrupt will never be serviced again.`,
+        });
+        break;
+      }
+    }
+  }
+
+  // --- 2. Code running over a vector -------------------------------------
+  for (const entry of parsed) {
+    const size = spanOf(entry);
+    if (size <= 0) continue;
+    for (let offset = 0; offset < size; offset++) {
+      const address = entry.address + offset;
+      // Only flag a statement that *crosses into* a vector, not one that
+      // deliberately starts there.
+      if (offset > 0 && vectorAddresses.has(address)) {
+        const vector = INTERRUPT_VECTORS.find((item) => item.address === address)!;
+        diagnostics.push({
+          level: "warning",
+          line: entry.line,
+          message: `This statement extends over the ${vector.name} interrupt vector at ${formatCodeAddress(address)}. Move the code past the vector table (for example ORG 0x0030) or jump over it.`,
+        });
+        break;
+      }
+    }
+  }
+}
+
 function formatCodeAddress(address: number): string {
   return `0x${(address & 0xffff).toString(16).toUpperCase().padStart(4, "0")}`;
 }
@@ -1369,10 +1481,19 @@ function encodeInstruction(
     parseOperand(operand, labels, equ, hints[index] ?? "any", entry.address),
   );
   if (ops.some((op) => op.type === "unknown" || ("unresolved" in op && op.unresolved))) {
+    // Name the operand that actually failed instead of blaming the whole
+    // instruction, and suggest a correction when it looks like a typo. A bare
+    // "Cannot resolve operands for mov" gives a student nothing to act on.
+    const badIndexes = ops
+      .map((op, index) => (op.type === "unknown" || ("unresolved" in op && op.unresolved) ? index : -1))
+      .filter((index) => index >= 0);
+    const details = badIndexes.map((index) =>
+      describeUnresolvedOperand((entry.operands[index] ?? "").trim(), labels, equ),
+    );
     diagnostics.push({
       level: "error",
       line: entry.line,
-      message: `Cannot resolve operands for ${entry.mnemonic}.`,
+      message: `${entry.mnemonic.toUpperCase()}: ${details.join(" ")}`,
     });
     return null;
   }
@@ -1766,6 +1887,125 @@ function encodeInstruction(
   }
 }
 
+/** Levenshtein distance, capped for short assembler symbols. */
+function editDistance(a: string, b: string): number {
+  const rows = a.length + 1;
+  const cols = b.length + 1;
+  let previous = Array.from({ length: cols }, (_, index) => index);
+  for (let i = 1; i < rows; i++) {
+    const current = [i];
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+    }
+    previous = current;
+  }
+  return previous[cols - 1];
+}
+
+/** True when the two names differ only by swapping one adjacent pair (VAL/VLA). */
+function isTransposition(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  const differing: number[] = [];
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) differing.push(index);
+    if (differing.length > 2) return false;
+  }
+  if (differing.length !== 2) return false;
+  const [first, second] = differing;
+  return second === first + 1 && a[first] === b[second] && a[second] === b[first];
+}
+
+/** Closest known symbol to `name`, or null when nothing is close enough. */
+function suggestSymbol(name: string, labels: Map<string, number>, equ: ConstantMap): string | null {
+  const target = name.toLowerCase();
+  if (!target) return null;
+  const candidates = [
+    ...Object.keys(ADUC841_SFR),
+    ...Object.keys(ADUC841_BITS),
+    ...labels.keys(),
+    ...equ.keys(),
+  ];
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const lower = candidate.toLowerCase();
+    // A swapped pair of letters is a single typo, but plain Levenshtein scores
+    // it as two edits, which would hide the suggestion for short names.
+    const distance = isTransposition(target, lower) ? 1 : editDistance(target, lower);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  // Allow one edit for short names, two for longer ones.
+  const limit = target.length <= 3 ? 1 : 2;
+  return best != null && bestDistance <= limit ? best.toUpperCase() : null;
+}
+
+/**
+ * Explain why a single operand could not be resolved, in terms a student can
+ * act on: an out-of-range register, a bad bit index, or an unknown symbol
+ * (with a "did you mean" hint when one is close).
+ */
+function describeUnresolvedOperand(text: string, labels: Map<string, number>, equ: ConstantMap): string {
+  if (!text) return "missing operand.";
+  const body = text.replace(/^#/, "").trim();
+
+  // A quoted literal that is not exactly one character: 'AB' is not a value.
+  const quoted = /^'((?:\\.|[^'\\])*)'$/.exec(body);
+  if (quoted) {
+    const decoded = quoted[1].replace(/\\(.)/g, "$1");
+    return decoded.length === 0
+      ? `"${text}" is an empty character literal; use a single character such as 'A'.`
+      : `"${text}" holds ${decoded.length} characters; a character literal must be exactly one (use DB for strings).`;
+  }
+
+  // R8/R9/... - registers only go up to R7.
+  const register = /^r(\d+)$/i.exec(body);
+  if (register) {
+    return `"${text}" is not a register; the 8051 has only R0..R7 (bank selected with USING or PSW.RS0/RS1).`;
+  }
+
+  // Numeric byte.bit form whose base is not bit addressable, e.g. 30h.0.
+  const numericBit = /^(0x[0-9a-f]+|[0-9][0-9a-f]*h|\d+)\.(\d+)$/i.exec(body);
+  if (numericBit) {
+    if (Number(numericBit[2]) > 7) return `"${text}" is invalid: bit index must be 0..7.`;
+    return `"${text}" is not bit addressable. Only internal RAM 20h..2Fh and SFRs at addresses divisible by 8 (80h, 88h, 90h, ...) support bit access.`;
+  }
+
+  // Bit address with an index above 7, e.g. P1.9.
+  const bit = /^([A-Za-z_]\w*)\.(\d+)$/.exec(body);
+  if (bit) {
+    const index = Number(bit[2]);
+    if (index > 7) return `"${text}" is invalid: bit index must be 0..7.`;
+    const base = bit[1].toLowerCase();
+    if (!(base in ADUC841_SFR)) {
+      const hint = suggestSymbol(base, labels, equ);
+      return `"${bit[1]}" is not a known SFR${hint ? `; did you mean ${hint}?` : "."}`;
+    }
+    return `"${text}" is not a bit-addressable location; only SFRs at addresses divisible by 8 are bit addressable.`;
+  }
+
+  // Plain identifier: unknown label, EQU or SFR.
+  if (/^[A-Za-z_$?][\w.$?]*$/.test(body)) {
+    const hint = suggestSymbol(body, labels, equ);
+    return `symbol "${body}" is not defined${hint ? `; did you mean ${hint}?` : " (check the label spelling, or define it with EQU)."}`;
+  }
+
+  // Expression containing an undefined name.
+  const names = body.match(/[A-Za-z_$?][\w.$?]*/g) ?? [];
+  for (const name of names) {
+    const lower = name.toLowerCase();
+    if (lower === "$" || labels.has(lower) || equ.has(lower) || lower in ADUC841_SFR || lower in ADUC841_BITS) continue;
+    if (/^(high|low|not|and|or|xor|mod|shl|shr)$/i.test(name)) continue;
+    const hint = suggestSymbol(name, labels, equ);
+    return `symbol "${name}" in "${text}" is not defined${hint ? `; did you mean ${hint}?` : "."}`;
+  }
+
+  return `operand "${text}" is not valid here.`;
+}
+
 function parseOperand(
   operand: string,
   labels: Map<string, number>,
@@ -1806,6 +2046,24 @@ function parseOperand(
     const byteBase = [0x80, 0x90, 0xa0, 0xb0][Number(bitMatch[1])];
     return { type: "bit", value: byteBase + Number(bitMatch[2]) };
   }
+  // Numeric bit address: `20h.0`, `2Fh.7`, `0D0h.3`. A51 allows a byte address
+  // with a dotted bit index wherever a bit operand is expected. Only the
+  // bit-addressable areas qualify: internal RAM 0x20..0x2F (bits 0x00..0x7F)
+  // and the SFRs whose address is divisible by 8.
+  const numericBitMatch = /^(0x[0-9a-f]+|[0-9][0-9a-f]*h|\d+)\.([0-7])$/i.exec(raw);
+  if (numericBitMatch) {
+    const baseAddr = resolveValue(numericBitMatch[1], labels, equ, currentAddress);
+    const bitIndex = Number(numericBitMatch[2]);
+    if (baseAddr != null) {
+      if (baseAddr >= 0x20 && baseAddr <= 0x2f) {
+        return { type: "bit", value: (baseAddr - 0x20) * 8 + bitIndex };
+      }
+      if (baseAddr >= 0x80 && baseAddr <= 0xff && (baseAddr & 0x07) === 0) {
+        return { type: "bit", value: baseAddr + bitIndex };
+      }
+    }
+  }
+
   const sfrBitMatch = /^([a-z_.$?][\w.$?]*)\.([0-7])$/i.exec(raw);
   if (sfrBitMatch) {
     const baseName = sfrBitMatch[1].toLowerCase();

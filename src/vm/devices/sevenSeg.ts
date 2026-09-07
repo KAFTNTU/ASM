@@ -52,26 +52,61 @@ export class SevenSeg4 {
     const w = 34;
     const h = 58;
     const t = 6;
+    // Gap between neighbouring segments. Plain rectangles butted together made
+    // "0" read as a solid block and let the middle bar run straight through
+    // the b/c columns; real displays leave a clear gap and mitre the ends.
+    const gap = 1.6;
+    const half = t / 2;
 
-    const rect = (rx: number, ry: number, rw: number, rh: number, c: string) => {
-      const on = c === SEG_ON;
+    // A segment drawn as a hexagon: a bar of thickness t whose ends taper to a
+    // point, so adjacent segments meet at a diagonal seam like real LED bars.
+    const bar = (
+      cx0: number, cy0: number, cx1: number, cy1: number, colour: string,
+    ) => {
+      const on = colour === SEG_ON;
+      const horizontal = cy0 === cy1;
       ctx.shadowColor = on ? "rgba(255, 55, 48, 0.9)" : "transparent";
       ctx.shadowBlur = on ? 10 : 0;
-      ctx.fillStyle = c;
-      ctx.fillRect(rx, ry, rw, rh);
+      ctx.fillStyle = colour;
+      ctx.beginPath();
+      if (horizontal) {
+        ctx.moveTo(cx0, cy0);
+        ctx.lineTo(cx0 + half, cy0 - half);
+        ctx.lineTo(cx1 - half, cy0 - half);
+        ctx.lineTo(cx1, cy0);
+        ctx.lineTo(cx1 - half, cy0 + half);
+        ctx.lineTo(cx0 + half, cy0 + half);
+      } else {
+        ctx.moveTo(cx0, cy0);
+        ctx.lineTo(cx0 + half, cy0 + half);
+        ctx.lineTo(cx0 + half, cy1 - half);
+        ctx.lineTo(cx0, cy1);
+        ctx.lineTo(cx0 - half, cy1 - half);
+        ctx.lineTo(cx0 - half, cy0 + half);
+      }
+      ctx.closePath();
+      ctx.fill();
       ctx.shadowBlur = 0;
     };
 
-    rect(x + t, y, w - 2 * t, t, seg(0)); // a
-    rect(x + w - t, y + t, t, h / 2 - t, seg(1)); // b
-    rect(x + w - t, y + h / 2, t, h / 2 - t, seg(2)); // c
-    rect(x + t, y + h - t, w - 2 * t, t, seg(3)); // d
-    rect(x, y + h / 2, t, h / 2 - t, seg(4)); // e
-    rect(x, y + t, t, h / 2 - t, seg(5)); // f
-    rect(x + t, y + h / 2 - t / 2, w - 2 * t, t, seg(6)); // g
+    // Centre lines of the digit skeleton.
+    const left = x + half;
+    const right = x + w - half;
+    const top = y + half;
+    const middle = y + h / 2;
+    const bottom = y + h - half;
 
+    bar(left + gap, top, right - gap, top, seg(0)); // a
+    bar(right, top + gap, right, middle - gap, seg(1)); // b
+    bar(right, middle + gap, right, bottom - gap, seg(2)); // c
+    bar(left + gap, bottom, right - gap, bottom, seg(3)); // d
+    bar(left, middle + gap, left, bottom - gap, seg(4)); // e
+    bar(left, top + gap, left, middle - gap, seg(5)); // f
+    bar(left + gap, middle, right - gap, middle, seg(6)); // g
+
+    // Decimal point, clear of the digit body so it cannot sit on segment c.
     ctx.beginPath();
-    ctx.arc(x + w - 2, y + h - 6, 4, 0, Math.PI * 2);
+    ctx.arc(x + w + 5, bottom, 3, 0, Math.PI * 2);
     const dp = seg(7);
     ctx.shadowColor = dp === SEG_ON ? "rgba(255, 55, 48, 0.9)" : "transparent";
     ctx.shadowBlur = dp === SEG_ON ? 10 : 0;

@@ -133,6 +133,9 @@ export function createMotorPanel(params: {
 
   const scopeTitleBar = el("div", { class: "scopeWindowCaption" });
   const scopeCaptionLeft = el("div", { class: "scopeCaptionLeft" });
+  const scopeTitleCluster = el("div", { class: "scopeTitleCluster" });
+  const scopeTitleMark = el("span", { class: "scopeTitleMark", "aria-hidden": "true" });
+  scopeTitleMark.textContent = "∿";
   const scopeTitle = el("span", { class: "scopeWindowTitle" });
   scopeTitle.textContent = "Oscilloscope";
   const scopeSourcePicker = el("select", { class: "scopeSourcePicker", title: "Signal source" }) as HTMLSelectElement;
@@ -142,7 +145,8 @@ export function createMotorPanel(params: {
     item.textContent = scopeSourceLabel(source);
     scopeSourcePicker.appendChild(item);
   }
-  scopeCaptionLeft.append(scopeTitle, scopeSourcePicker);
+  scopeTitleCluster.append(scopeTitleMark, scopeTitle);
+  scopeCaptionLeft.append(scopeTitleCluster, scopeSourcePicker);
   const scopeCaptionActions = el("div", { class: "scopeCaptionActions" });
   const scopeRunBtn = createScopePushButton("Stop");
   scopeRunBtn.classList.add("scopeRunBtn", "active");
@@ -157,6 +161,8 @@ export function createMotorPanel(params: {
 
   const scopeInfoRow = el("div", { class: "scopeInfoRowMain" });
   const cursorPad = el("div", { class: "scopeCursorPad" });
+  const cursorHeading = el("div", { class: "scopeSubpanelTitle" });
+  cursorHeading.textContent = "Cursors";
   const cursorT1Label = el("span");
   cursorT1Label.textContent = "T1";
   const cursorT2Label = el("span");
@@ -168,12 +174,15 @@ export function createMotorPanel(params: {
   const t2LeftBtn = createScopePushButton("\u25C0");
   const t2RightBtn = createScopePushButton("\u25B6");
   cursorPad.append(
+    cursorHeading,
     createCursorRow(cursorT1Label, t1LeftBtn, t1RightBtn),
     createCursorRow(cursorT2Label, t2LeftBtn, t2RightBtn),
     createCursorRow(cursorDeltaLabel),
   );
 
   const scopeReadout = el("div", { class: "scopeReadoutPanel mono" });
+  const readoutHeading = el("div", { class: "scopeSubpanelTitle" });
+  readoutHeading.textContent = "Measurements";
   const scopeReadoutTable = el("table", { class: "scopeReadoutTable multisimReadoutTable" });
   scopeReadoutTable.innerHTML = `
     <thead>
@@ -185,9 +194,11 @@ export function createMotorPanel(params: {
       <tr><td>T2-T1</td><td>0.000 s</td><td>0.000 V</td></tr>
     </tbody>
   `;
-  scopeReadout.appendChild(scopeReadoutTable);
+  scopeReadout.append(readoutHeading, scopeReadoutTable);
 
   const scopeUtility = el("div", { class: "scopeUtilityPanel" });
+  const utilityHeading = el("div", { class: "scopeSubpanelTitle" });
+  utilityHeading.textContent = "Tools";
   const reverseBtn = createScopeActionButton("Reverse");
   const saveBtn = createScopeActionButton("Save");
   const extTriggerRow = el("label", { class: "scopeExtTriggerRow" });
@@ -195,7 +206,7 @@ export function createMotorPanel(params: {
   extTriggerText.textContent = "Ext. trigger";
   const extTriggerDot = el("span", { class: "scopeRadioDot" });
   extTriggerRow.append(extTriggerText, extTriggerDot);
-  scopeUtility.append(reverseBtn, saveBtn, extTriggerRow);
+  scopeUtility.append(utilityHeading, reverseBtn, saveBtn, extTriggerRow);
   scopeInfoRow.append(cursorPad, scopeReadout, scopeUtility);
 
   const scopeControlStrip = el("div", { class: "scopeControlStrip multisimControlStrip" });
