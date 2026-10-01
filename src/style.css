@@ -1415,6 +1415,9 @@ input {
   margin: 0;
   padding: 14px;
   overflow: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #516d88 #111d2b;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: #d3e0ef;
@@ -1423,6 +1426,26 @@ input {
   line-height: 1.55;
   user-select: text;
   -webkit-user-select: text;
+}
+
+.flashLogBody::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.flashLogBody::-webkit-scrollbar-track,
+.flashLogBody::-webkit-scrollbar-corner {
+  background: #111d2b;
+}
+
+.flashLogBody::-webkit-scrollbar-thumb {
+  border: 3px solid #111d2b;
+  border-radius: 9px;
+  background: #516d88;
+}
+
+.flashLogBody::-webkit-scrollbar-thumb:hover {
+  background: #6f91af;
 }
 
 .motorModal {
@@ -4262,6 +4285,21 @@ body {
 .minimalShell[data-theme="light"] .flashLogBody {
   color: #26384d;
   background: #edf2f7;
+  scrollbar-color: #91a8bd #d8e3ed;
+}
+
+.minimalShell[data-theme="light"] .flashLogBody::-webkit-scrollbar-track,
+.minimalShell[data-theme="light"] .flashLogBody::-webkit-scrollbar-corner {
+  background: #d8e3ed;
+}
+
+.minimalShell[data-theme="light"] .flashLogBody::-webkit-scrollbar-thumb {
+  border-color: #d8e3ed;
+  background: #91a8bd;
+}
+
+.minimalShell[data-theme="light"] .flashLogBody::-webkit-scrollbar-thumb:hover {
+  background: #6d8aa4;
 }
 
 .minimalShell[data-theme="light"] .debugHead {

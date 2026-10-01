@@ -55,6 +55,12 @@ const UI_TEXT = {
         openFile: "Open file",
         download: "Download",
         downloadHex: "Download HEX",
+        flashTitle: "ADuC841 Flash diagnostics",
+        flashHint: "The log records every UART packet. After choosing the COM port, press RESET during the reset window.",
+        flashCopy: "Copy log",
+        flashCopied: "Copied",
+        flashCopyFailed: "Copy failed",
+        flashWaiting: "Waiting for a flash session…",
         autosave: "Autosave",
         speed: "Speed",
         fileName: "File name",
@@ -86,6 +92,12 @@ const UI_TEXT = {
         openFile: "Відкрити файл",
         download: "Завантажити",
         downloadHex: "Завантажити HEX",
+        flashTitle: "Діагностика прошивки ADuC841",
+        flashHint: "Журнал показує кожен пакет UART. Після вибору COM-порту натисніть RESET, поки триває очікування скидання.",
+        flashCopy: "Скопіювати журнал",
+        flashCopied: "Скопійовано",
+        flashCopyFailed: "Не вдалося скопіювати",
+        flashWaiting: "Очікування запуску прошивки…",
         autosave: "Автозбереження",
         speed: "Швидкість",
         fileName: "Назва файлу",
@@ -106,6 +118,54 @@ const UI_TEXT = {
         restored: "відновлено",
     },
 } as const;
+
+const FLASH_TRACE_LABEL_UK: Record<string, string> = {
+    "Opening serial port": "Відкриття послідовного порту",
+    "Waiting for board RESET": "Очікування RESET на платі",
+    "UART received": "Отримано через UART",
+    "UART receive stream failed": "Збій приймання UART",
+    "No automatic ID received": "Автоматичний ID не отримано",
+    "Interrogate Version 2 loader": "Запит до завантажувача Version 2",
+    "Loader ID accepted": "ID завантажувача підтверджено",
+    "Erase CODE Flash": "Стирання програмної Flash",
+    "Programming image": "Запис програми",
+    "Run user code at 0x0000": "Запуск програми з 0x0000",
+    "Flash session completed": "Прошивку завершено",
+    "Flash session failed": "Збій прошивки",
+    "Serial port closed": "Послідовний порт закрито",
+};
+
+function translateFlashTraceText(text: string, language: UiLanguage): string {
+    if (language === "en") return text;
+    if (FLASH_TRACE_LABEL_UK[text]) return FLASH_TRACE_LABEL_UK[text];
+    const write = text.match(/^Write (\d+)\/(\d+) at (0x[\dA-F]+)$/i);
+    if (write) return `Запис блоку ${write[1]}/${write[2]} за адресою ${write[3]}`;
+    const waiting = text.match(/^Waiting for ACK: (.+)$/);
+    if (waiting) return `Очікування ACK: ${translateFlashTraceText(waiting[1], language)}`;
+    const ack = text.match(/^ACK received: (.+)$/);
+    if (ack) return `ACK отримано: ${translateFlashTraceText(ack[1], language)}`;
+    const nak = text.match(/^NAK received: (.+)$/);
+    if (nak) return `NAK отримано: ${translateFlashTraceText(nak[1], language)}`;
+    if (text.startsWith("Press RESET now; listening 5 seconds")) {
+        return "Натисніть RESET зараз; очікування автоматичного ID завантажувача протягом 5 секунд.";
+    }
+    if (text === "Trying the documented Version 2 interrogation packet next.") {
+        return "Далі буде надіслано документований запит до завантажувача Version 2.";
+    }
+    const portSettings = text.match(/^(\d+) baud, 8N1, RTS\/DTR inactive, RX buffer (\d+) bytes$/);
+    if (portSettings) return `${portSettings[1]} бод, 8N1, RTS/DTR неактивні, буфер RX ${portSettings[2]} байтів`;
+    if (text.startsWith("automatic reset ID:")) return text.replace("automatic reset ID:", "автоматичний ID після RESET:").replace("checksum OK", "контрольна сума правильна");
+    if (text.startsWith("interrogation response:")) return text.replace("interrogation response:", "відповідь на запит:").replace("checksum OK", "контрольна сума правильна");
+    const packets = text.match(/^(\d+) bytes in (\d+) packet\(s\)\.$/);
+    if (packets) return `${packets[1]} байтів у ${packets[2]} пакетах.`;
+    const written = text.match(/^(\d+) bytes written and acknowledged\.$/);
+    if (written) return `${written[1]} байтів записано й підтверджено.`;
+    if (text === "Buffer overrun") return "Переповнення буфера (Buffer overrun)";
+    if (text.startsWith("ADuC841 loader returned NAK (0x07) after: ")) {
+        return text.replace("ADuC841 loader returned NAK (0x07) after: ", "Завантажувач ADuC841 повернув NAK (0x07) після: ").replace("Erase CODE Flash.", "стирання програмної Flash.");
+    }
+    return text;
+}
 
 const SUBTREE_TRANSLATIONS: Array<[string, string]> = [
     ["Start", "Старт"],
@@ -297,14 +357,14 @@ export function renderStand(params: { board: Board }): HTMLElement {
     const flashLogCard = el("div", { class: "debugCard flashLogCard" });
     const flashLogHead = el("div", { class: "debugHead" });
     const flashLogTitle = el("div", { class: "debugTitle" });
-    flashLogTitle.textContent = "ADuC841 Flash diagnostics";
+    flashLogTitle.textContent = t("flashTitle");
     const flashLogActions = el("div", { class: "flashLogActions" });
-    const flashLogCopy = button("Copy log");
+    const flashLogCopy = button(t("flashCopy"));
     const flashLogClose = button(t("close"));
     flashLogActions.append(flashLogCopy, flashLogClose);
     flashLogHead.append(flashLogTitle, flashLogActions);
     const flashLogHint = el("div", { class: "flashLogHint" });
-    flashLogHint.textContent = "The log records every UART packet. After choosing COM10, press RESET while the reset window is open.";
+    flashLogHint.textContent = t("flashHint");
     const flashLogBody = el("pre", { class: "flashLogBody mono" });
     flashLogCard.append(flashLogHead, flashLogHint, flashLogBody);
     flashLogModal.appendChild(flashLogCard);
@@ -482,20 +542,35 @@ export function renderStand(params: { board: Board }): HTMLElement {
     let currentSpeed = 1;
     let sourceMode: "asm" | "c" = "asm";
     let programLoaded = false;
-    const flashLogLines: string[] = [];
+    const flashLogEvents: Aduc841FlashTraceEvent[] = [];
+    let flashCopyState: "ready" | "copied" | "failed" = "ready";
+    const renderFlashLog = () => {
+        const previousScrollTop = flashLogBody.scrollTop;
+        const followLatest = flashLogBody.scrollHeight - previousScrollTop - flashLogBody.clientHeight < 32;
+        if (!flashLogEvents.length) {
+            flashLogBody.textContent = t("flashWaiting");
+            return;
+        }
+        flashLogBody.textContent = flashLogEvents.map((event) => {
+            const elapsed = `${(event.atMs / 1000).toFixed(3)}s`.padStart(9, " ");
+            const kind = tr(
+                event.kind.toUpperCase(),
+                ({ state: "СТАН", tx: "TX", rx: "RX", error: "ПОМИЛКА" } as const)[event.kind],
+            ).padEnd(7, " ");
+            const bytes = event.bytes?.length ? `  ${event.bytes.map(hexByte).join(" ")}` : "";
+            const detail = event.detail ? `  — ${translateFlashTraceText(event.detail, uiLanguage)}` : "";
+            return `${elapsed}  ${kind}  ${translateFlashTraceText(event.label, uiLanguage)}${bytes}${detail}`;
+        }).join("\n");
+        flashLogBody.scrollTop = followLatest ? flashLogBody.scrollHeight : previousScrollTop;
+    };
     const resetFlashLog = () => {
-        flashLogLines.length = 0;
-        flashLogBody.textContent = "Waiting for a flash session…";
+        flashLogEvents.length = 0;
+        renderFlashLog();
     };
     const appendFlashTrace = (event: Aduc841FlashTraceEvent) => {
-        const elapsed = `${(event.atMs / 1000).toFixed(3)}s`.padStart(9, " ");
-        const kind = event.kind.toUpperCase().padEnd(5, " ");
-        const bytes = event.bytes?.length ? `  ${event.bytes.map(hexByte).join(" ")}` : "";
-        const detail = event.detail ? `  — ${event.detail}` : "";
-        flashLogLines.push(`${elapsed}  ${kind}  ${event.label}${bytes}${detail}`);
-        if (flashLogLines.length > 500) flashLogLines.splice(0, flashLogLines.length - 500);
-        flashLogBody.textContent = flashLogLines.join("\n");
-        flashLogBody.scrollTop = flashLogBody.scrollHeight;
+        flashLogEvents.push(event);
+        if (flashLogEvents.length > 500) flashLogEvents.splice(0, flashLogEvents.length - 500);
+        renderFlashLog();
     };
     cpu.setSpeed(speedToBatch(currentSpeed));
     let editorScrollDrag = false;
@@ -1096,12 +1171,17 @@ export function renderStand(params: { board: Board }): HTMLElement {
         const logText = flashLogBody.textContent ?? "";
         try {
             await navigator.clipboard.writeText(logText);
-            flashLogCopy.textContent = "Copied";
+            flashCopyState = "copied";
+            flashLogCopy.textContent = t("flashCopied");
         }
         catch {
-            flashLogCopy.textContent = "Copy failed";
+            flashCopyState = "failed";
+            flashLogCopy.textContent = t("flashCopyFailed");
         }
-        window.setTimeout(() => { flashLogCopy.textContent = "Copy log"; }, 1400);
+        window.setTimeout(() => {
+            flashCopyState = "ready";
+            flashLogCopy.textContent = t("flashCopy");
+        }, 1400);
     });
     // Keep runner open until user presses "Close" explicitly.
     runBtn.addEventListener("click", async () => {
@@ -1550,6 +1630,11 @@ export function renderStand(params: { board: Board }): HTMLElement {
         speedLabel.textContent = t("speed");
         debugTitle.textContent = t("runnerTitle");
         debugClose.textContent = t("close");
+        flashLogTitle.textContent = t("flashTitle");
+        flashLogHint.textContent = t("flashHint");
+        flashLogClose.textContent = t("close");
+        flashLogCopy.textContent = t(flashCopyState === "copied" ? "flashCopied" : flashCopyState === "failed" ? "flashCopyFailed" : "flashCopy");
+        renderFlashLog();
         messagesTitle.textContent = t("output");
         execMarker.title = t("currentInstruction");
         splitHandle.title = t("resize");
