@@ -1376,6 +1376,55 @@ input {
   color: #b9cbe1;
 }
 
+.flashLogModal {
+  z-index: 100;
+  justify-content: center;
+  align-items: center;
+  padding: 22px;
+  box-sizing: border-box;
+  background: rgba(3, 8, 14, 0.52);
+}
+
+.flashLogCard {
+  width: min(92vw, 1080px);
+  min-width: min(520px, calc(100vw - 44px));
+  height: min(76vh, 700px);
+  border: 1px solid rgba(97, 184, 218, 0.42);
+  border-radius: 12px;
+  grid-template-rows: 46px auto minmax(0, 1fr);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.58);
+}
+
+.flashLogActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flashLogHint {
+  padding: 10px 14px;
+  color: #a7bdd6;
+  font-size: 12px;
+  line-height: 1.35;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: #141d2a;
+}
+
+.flashLogBody {
+  min-height: 0;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #d3e0ef;
+  background: #090f18;
+  font-size: 12px;
+  line-height: 1.55;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .motorModal {
   position: absolute;
   inset: 0;
@@ -4202,6 +4251,17 @@ body {
   color: #293b50;
   border-color: rgba(55, 76, 103, 0.18);
   background: #d1dce7;
+}
+
+.minimalShell[data-theme="light"] .flashLogHint {
+  color: #425b77;
+  border-bottom-color: rgba(55, 76, 103, 0.16);
+  background: #dbe4ed;
+}
+
+.minimalShell[data-theme="light"] .flashLogBody {
+  color: #26384d;
+  background: #edf2f7;
 }
 
 .minimalShell[data-theme="light"] .debugHead {

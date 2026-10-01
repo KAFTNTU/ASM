@@ -1,6 +1,10 @@
 import { EmuBoardController, type CpuTraceEntry } from "../vm/emuBoardController";
 import type { Board } from "../vm/board";
-import { flashAduc841, isAduc841SerialSupported } from "../vm/aduc841Serial";
+import {
+    flashAduc841,
+    isAduc841SerialSupported,
+    type Aduc841FlashTraceEvent,
+} from "../vm/aduc841Serial";
 import { SFR } from "../vm/st841Map";
 import { compileAsm, type AsmDiagnostic } from "./asmCompiler";
 import { checkC } from "./cChecker";
@@ -50,6 +54,7 @@ const UI_TEXT = {
         file: "File",
         openFile: "Open file",
         download: "Download",
+        downloadHex: "Download HEX",
         autosave: "Autosave",
         speed: "Speed",
         fileName: "File name",
@@ -80,6 +85,7 @@ const UI_TEXT = {
         file: "Файл",
         openFile: "Відкрити файл",
         download: "Завантажити",
+        downloadHex: "Завантажити HEX",
         autosave: "Автозбереження",
         speed: "Швидкість",
         fileName: "Назва файлу",
@@ -239,10 +245,12 @@ export function renderStand(params: { board: Board }): HTMLElement {
     openFileBtn.textContent = t("openFile");
     const downloadFileBtn = el("button", { class: "fileMenuItem", type: "button" });
     downloadFileBtn.textContent = t("download");
+    const downloadHexBtn = el("button", { class: "fileMenuItem", type: "button" });
+    downloadHexBtn.textContent = t("downloadHex");
     const autosaveBtn = el("button", { class: "fileMenuItem autosaveMenuItem", type: "button" });
     autosaveBtn.textContent = t("autosave");
     const fileInput = el("input", { type: "file", accept: ".c,.h,.asm,.a51,.txt", class: "hiddenFileInput" });
-    fileMenu.append(openFileBtn, downloadFileBtn, autosaveBtn);
+    fileMenu.append(openFileBtn, downloadFileBtn, downloadHexBtn, autosaveBtn);
     fileMenuWrap.append(fileMenuBtn, fileMenu, fileInput);
     const speedGroup = el("div", { class: "speedGroup" });
     const speedLabel = el("span", { class: "speedLabel" });
@@ -285,6 +293,22 @@ export function renderStand(params: { board: Board }): HTMLElement {
     debugCard.append(debugHead, debugBody);
     debugModal.appendChild(debugCard);
     windowCard.appendChild(debugModal);
+    const flashLogModal = el("div", { class: "debugModal flashLogModal hidden" });
+    const flashLogCard = el("div", { class: "debugCard flashLogCard" });
+    const flashLogHead = el("div", { class: "debugHead" });
+    const flashLogTitle = el("div", { class: "debugTitle" });
+    flashLogTitle.textContent = "ADuC841 Flash diagnostics";
+    const flashLogActions = el("div", { class: "flashLogActions" });
+    const flashLogCopy = button("Copy log");
+    const flashLogClose = button(t("close"));
+    flashLogActions.append(flashLogCopy, flashLogClose);
+    flashLogHead.append(flashLogTitle, flashLogActions);
+    const flashLogHint = el("div", { class: "flashLogHint" });
+    flashLogHint.textContent = "The log records every UART packet. After choosing COM10, press RESET while the reset window is open.";
+    const flashLogBody = el("pre", { class: "flashLogBody mono" });
+    flashLogCard.append(flashLogHead, flashLogHint, flashLogBody);
+    flashLogModal.appendChild(flashLogCard);
+    windowCard.appendChild(flashLogModal);
     const motorPanel = createMotorPanel({
         motor: board.extraDevices.motor,
         audio: board.extraDevices.audio,
@@ -458,6 +482,21 @@ export function renderStand(params: { board: Board }): HTMLElement {
     let currentSpeed = 1;
     let sourceMode: "asm" | "c" = "asm";
     let programLoaded = false;
+    const flashLogLines: string[] = [];
+    const resetFlashLog = () => {
+        flashLogLines.length = 0;
+        flashLogBody.textContent = "Waiting for a flash session…";
+    };
+    const appendFlashTrace = (event: Aduc841FlashTraceEvent) => {
+        const elapsed = `${(event.atMs / 1000).toFixed(3)}s`.padStart(9, " ");
+        const kind = event.kind.toUpperCase().padEnd(5, " ");
+        const bytes = event.bytes?.length ? `  ${event.bytes.map(hexByte).join(" ")}` : "";
+        const detail = event.detail ? `  — ${event.detail}` : "";
+        flashLogLines.push(`${elapsed}  ${kind}  ${event.label}${bytes}${detail}`);
+        if (flashLogLines.length > 500) flashLogLines.splice(0, flashLogLines.length - 500);
+        flashLogBody.textContent = flashLogLines.join("\n");
+        flashLogBody.scrollTop = flashLogBody.scrollHeight;
+    };
     cpu.setSpeed(speedToBatch(currentSpeed));
     let editorScrollDrag = false;
     let currentPcToLine: Array<{ pc: number; line: number }> = [];
@@ -794,6 +833,22 @@ export function renderStand(params: { board: Board }): HTMLElement {
         window.setTimeout(() => URL.revokeObjectURL(link.href), 500);
         messagesMeta.textContent = `downloaded ${currentFileName()}`;
     });
+    downloadHexBtn.addEventListener("click", () => {
+        closeFileMenu();
+        const result = compileAndRender(false);
+        if (!result.ok || !result.hex.trim()) return;
+        const sourceName = currentFileName();
+        const hexName = `${sourceName.replace(/\.[^.]+$/, "") || "main"}.hex`;
+        const blob = new Blob([result.hex.endsWith("\n") ? result.hex : `${result.hex}\n`], { type: "text/plain;charset=utf-8" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = hexName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(link.href), 500);
+        messagesMeta.textContent = `downloaded ${hexName}`;
+    });
     autosaveBtn.addEventListener("click", () => {
         autosaveEnabled = !autosaveEnabled;
         localStorage.setItem("st841.editor.autosave.enabled", autosaveEnabled ? "1" : "0");
@@ -982,6 +1037,8 @@ export function renderStand(params: { board: Board }): HTMLElement {
         }
         const result = compileAndRender(true);
         if (!result.ok || !result.hex.trim()) return;
+        resetFlashLog();
+        flashLogModal.classList.remove("hidden");
         flashBtn.disabled = true;
         flashBtn.textContent = "…";
         statusStrip.textContent = "Connect ADuC841: JP6=Programming, SW8=USB, then press RESET.";
@@ -991,6 +1048,12 @@ export function renderStand(params: { board: Board }): HTMLElement {
                 runAfter: true,
                 onProgress: (written, total) => {
                     statusStrip.textContent = `Flashing ADuC841… ${Math.round((written / Math.max(1, total)) * 100)}%`;
+                },
+                onTrace: (event) => {
+                    appendFlashTrace(event);
+                    if (event.label === "Waiting for board RESET") {
+                        statusStrip.textContent = "COM port is open — press RESET on the board now.";
+                    }
                 },
             });
             statusStrip.textContent = "ADuC841 programmed successfully.";
@@ -1025,6 +1088,20 @@ export function renderStand(params: { board: Board }): HTMLElement {
         debugOpen = false;
         cpu.setTraceEnabled(false);
         debugModal.classList.add("hidden");
+    });
+    flashLogClose.addEventListener("click", () => {
+        flashLogModal.classList.add("hidden");
+    });
+    flashLogCopy.addEventListener("click", async () => {
+        const logText = flashLogBody.textContent ?? "";
+        try {
+            await navigator.clipboard.writeText(logText);
+            flashLogCopy.textContent = "Copied";
+        }
+        catch {
+            flashLogCopy.textContent = "Copy failed";
+        }
+        window.setTimeout(() => { flashLogCopy.textContent = "Copy log"; }, 1400);
     });
     // Keep runner open until user presses "Close" explicitly.
     runBtn.addEventListener("click", async () => {
@@ -1469,6 +1546,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
         fileMenuBtn.textContent = t("file");
         openFileBtn.textContent = t("openFile");
         downloadFileBtn.textContent = t("download");
+        downloadHexBtn.textContent = t("downloadHex");
         speedLabel.textContent = t("speed");
         debugTitle.textContent = t("runnerTitle");
         debugClose.textContent = t("close");
