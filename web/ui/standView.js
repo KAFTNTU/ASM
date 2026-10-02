@@ -29,6 +29,8 @@ const UI_TEXT = {
         flashCopy: "Copy log",
         flashCopied: "Copied",
         flashCopyFailed: "Copy failed",
+        flashDriver: "Driver (.ZIP)",
+        flashDriverHint: "Download from Silicon Labs; extract the ZIP and run CP210xVCPInstaller_x64.exe on 64-bit Windows.",
         flashWaiting: "Waiting for a flash session…",
         autosave: "Autosave",
         speed: "Speed",
@@ -66,6 +68,8 @@ const UI_TEXT = {
         flashCopy: "Скопіювати журнал",
         flashCopied: "Скопійовано",
         flashCopyFailed: "Не вдалося скопіювати",
+        flashDriver: "Драйвер (.ZIP)",
+        flashDriverHint: "Завантажте з Silicon Labs, розпакуйте ZIP і запустіть CP210xVCPInstaller_x64.exe для 64-бітної Windows.",
         flashWaiting: "Очікування запуску прошивки…",
         autosave: "Автозбереження",
         speed: "Швидкість",
@@ -336,9 +340,16 @@ export function renderStand(params) {
     const flashLogTitle = el("div", { class: "debugTitle" });
     flashLogTitle.textContent = t("flashTitle");
     const flashLogActions = el("div", { class: "flashLogActions" });
+    const flashDriverLink = el("a", { class: "topBtn flashDriverLink" });
+    flashDriverLink.href = "https://www.silabs.com/documents/public/software/CP210x_VCP_Windows.zip";
+    flashDriverLink.target = "_blank";
+    flashDriverLink.rel = "noopener noreferrer";
+    flashDriverLink.download = "CP210x_VCP_Windows.zip";
+    flashDriverLink.title = t("flashDriverHint");
+    flashDriverLink.textContent = t("flashDriver");
     const flashLogCopy = button(t("flashCopy"));
     const flashLogClose = button(t("close"));
-    flashLogActions.append(flashLogCopy, flashLogClose);
+    flashLogActions.append(flashDriverLink, flashLogCopy, flashLogClose);
     flashLogHead.append(flashLogTitle, flashLogActions);
     const flashLogHint = el("div", { class: "flashLogHint" });
     flashLogHint.textContent = t("flashHint");
@@ -1600,6 +1611,8 @@ export function renderStand(params) {
         debugClose.textContent = t("close");
         flashLogTitle.textContent = t("flashTitle");
         flashLogHint.textContent = t("flashHint");
+        flashDriverLink.title = t("flashDriverHint");
+        flashDriverLink.textContent = t("flashDriver");
         flashLogClose.textContent = t("close");
         flashLogCopy.textContent = t(flashCopyState === "copied" ? "flashCopied" : flashCopyState === "failed" ? "flashCopyFailed" : "flashCopy");
         renderFlashLog();
