@@ -5168,7 +5168,15 @@ body {
 .motorFloatingWindow .panelResizeHandle-card { display: none !important; }
 .floatingWindowDock { margin-left: auto; }
 .floatingWindowDock svg { transform: rotate(35deg); pointer-events: none; }
-.floatingWindow .floatingWindowDock[aria-pressed="true"] { color: var(--user-accent, #2da5b5); border-color: currentColor; }
+.floatingWindow .floatingWindowDock[aria-pressed="true"] {
+  color: var(--user-accent, #2da5b5);
+  border-color: currentColor;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--user-accent, #2da5b5) 55%, transparent);
+}
+.minimalShell[data-reduce-motion="true"] .floatingWindow .floatingWindowDock[aria-pressed="true"] {
+  background: transparent;
+  box-shadow: none;
+}
 .floatingWindow[data-docked="true"] .floatingResizeCorner { display: none; }
 .floatingWindow[data-docked="true"] .floatingResize-se { display: block; }
 .floatingWindow[data-docked="true"] { min-width: min(340px, calc(100% - 16px)); }
