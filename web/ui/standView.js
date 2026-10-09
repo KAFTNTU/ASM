@@ -1,16 +1,69 @@
-import { EmuBoardController } from "../vm/emuBoardController.js";
-import { flashAduc841, isAduc841SerialSupported, } from "../vm/aduc841Serial.js";
-import { SFR } from "../vm/st841Map.js";
-import { compileAsm } from "./asmCompiler.js";
-import { checkC } from "./cChecker.js";
-import { transpileCToAsm } from "./cTranspiler.js";
-import { createMotorPanel } from "./motorPanel.js";
-import { LiveAudioMonitor } from "./liveAudioMonitor.js";
-import { createLogicEditor } from "./logicEditor.js";
-import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js";
+import { EmuBoardController } from "../vm/emuBoardController.js?v=mv1gqa5k";
+import { flashAduc841, isAduc841SerialSupported, } from "../vm/aduc841Serial.js?v=mv1gqa5k";
+import { SFR } from "../vm/st841Map.js?v=mv1gqa5k";
+import { compileAsm } from "./asmCompiler.js?v=mv1gqa5k";
+import { checkC } from "./cChecker.js?v=mv1gqa5k";
+import { transpileCToAsm } from "./cTranspiler.js?v=mv1gqa5k";
+import { createMotorPanel } from "./motorPanel.js?v=mv1gqa5k";
+import { LiveAudioMonitor } from "./liveAudioMonitor.js?v=mv1gqa5k";
+import { createLogicEditor } from "./logicEditor.js?v=mv1gqa5k";
+import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js?v=mv1gqa5k";
+import { MemoryTable } from "./memoryTable.js?v=mv1gqa5k";
+import { createFloatingWindow } from "./floatingWindow.js?v=mv1gqa5k";
+import { LAYOUT_STORAGE_KEY, STAND_ITEMS, STAND_ITEM_IDS, TOOLBAR_CONTROL_IDS, TOOLBAR_CONTROLS, TOOLBAR_GROUP_IDS, TOOLBAR_GROUPS, clampStandPlacement, defaultInterfaceLayout, loadInterfaceLayout, } from "./interfaceLayout.js?v=mv1gqa5k";
 const EDITOR_UNDO_GROUP_MS = 700;
 const EDITOR_HISTORY_LIMIT = 300;
 const UI_LANGUAGE_KEY = "st841.ui.language";
+const PERSONAL_SETTINGS_KEY = "st841.ui.personal.v1";
+const DEFAULT_PERSONAL_SETTINGS = {
+    accent: "#2da5b5",
+    frameDark: "#1a2028",
+    frameLight: "#dce5ee",
+    pageDark: "#080c12",
+    pageLight: "#c7d2df",
+    boardDark: "#0c121a",
+    boardLight: "#d9e1e9",
+    outputDark: "#0d141e",
+    outputLight: "#d2dce7",
+    editorFontSize: 13,
+    editorLineHeight: 1.55,
+    speed: 1,
+    memoryRefreshMs: 250,
+    stepRepeatHz: 10,
+    reduceMotion: false,
+};
+function loadPersonalSettings() {
+    let saved = {};
+    try {
+        const value = JSON.parse(localStorage.getItem(PERSONAL_SETTINGS_KEY) || "{}");
+        if (value && typeof value === "object")
+            saved = value;
+    }
+    catch { /* defaults */ }
+    const color = (value, fallback) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+    return {
+        accent: color(saved.accent, DEFAULT_PERSONAL_SETTINGS.accent),
+        frameDark: color(saved.frameDark, DEFAULT_PERSONAL_SETTINGS.frameDark),
+        frameLight: color(saved.frameLight, DEFAULT_PERSONAL_SETTINGS.frameLight),
+        pageDark: color(saved.pageDark, DEFAULT_PERSONAL_SETTINGS.pageDark),
+        pageLight: color(saved.pageLight, DEFAULT_PERSONAL_SETTINGS.pageLight),
+        boardDark: color(saved.boardDark, DEFAULT_PERSONAL_SETTINGS.boardDark),
+        boardLight: color(saved.boardLight, DEFAULT_PERSONAL_SETTINGS.boardLight),
+        outputDark: color(saved.outputDark, DEFAULT_PERSONAL_SETTINGS.outputDark),
+        outputLight: color(saved.outputLight, DEFAULT_PERSONAL_SETTINGS.outputLight),
+        editorFontSize: Number.isFinite(saved.editorFontSize) ? Math.max(8, Math.min(22, saved.editorFontSize)) : 13,
+        editorLineHeight: Number.isFinite(saved.editorLineHeight) ? Math.max(1, Math.min(1.9, saved.editorLineHeight)) : 1.55,
+        speed: [1, 10, 100, 1000, 10000].includes(saved.speed ?? 0) ? saved.speed : 1,
+        memoryRefreshMs: [100, 250, 500].includes(saved.memoryRefreshMs ?? 0) ? saved.memoryRefreshMs : 250,
+        stepRepeatHz: [2, 5, 10, 20, 50].includes(saved.stepRepeatHz ?? 0) ? saved.stepRepeatHz : 10,
+        reduceMotion: saved.reduceMotion === true,
+    };
+}
+function contrastText(hex) {
+    const channels = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255);
+    const luminance = channels.map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * luminance[0] + 0.7152 * luminance[1] + 0.0722 * luminance[2] > 0.4 ? "#142033" : "#f4f8ff";
+}
 const UI_TEXT = {
     en: {
         start: "Start",
@@ -19,7 +72,7 @@ const UI_TEXT = {
         step: "Step",
         runner: "Runner",
         oscilloscope: "Oscilloscope",
-        logicCircuits: "Logic circuits",
+        logicCircuits: "Circuits",
         file: "File",
         openFile: "Open file",
         download: "Download",
@@ -32,6 +85,28 @@ const UI_TEXT = {
         flashDriver: "Driver (.ZIP)",
         flashDriverHint: "Download from Silicon Labs; extract the ZIP and run CP210xVCPInstaller_x64.exe on 64-bit Windows.",
         flashWaiting: "Waiting for a flash session…",
+        memory: "Memory",
+        popoutStand: "Stand ↗",
+        dockBack: "Stand ↩",
+        focusStandWindow: "Focus stand window",
+        settings: "Settings",
+        theme: "Theme",
+        light: "Light",
+        dark: "Dark",
+        accentColor: "Accent color",
+        frameColor: "Toolbar and window headers",
+        pageColor: "App background",
+        boardColor: "Stand area background",
+        outputColor: "Output area background",
+        editStand: "Arrange stand devices",
+        editToolbar: "Arrange top toolbar",
+        editorFontSize: "Code font size",
+        editorLineHeight: "Code line spacing",
+        defaultSpeed: "Simulation speed",
+        memoryRefresh: "Memory refresh",
+        reduceMotion: "Reduce animations",
+        resetPreferences: "Reset settings and window positions",
+        settingsSaved: "Changes save automatically on this device.",
         autosave: "Autosave",
         speed: "Speed",
         fileName: "File name",
@@ -40,7 +115,7 @@ const UI_TEXT = {
         lightTheme: "Switch to light theme",
         darkTheme: "Switch to dark theme",
         close: "Close",
-        runnerTitle: "Runner / registers / memory",
+        runnerTitle: "Runner / registers",
         output: "Output",
         currentInstruction: "Current instruction",
         resize: "Resize",
@@ -58,7 +133,7 @@ const UI_TEXT = {
         step: "Крок",
         runner: "Виконання",
         oscilloscope: "Осцилограф",
-        logicCircuits: "Логічні схеми",
+        logicCircuits: "Схеми",
         file: "Файл",
         openFile: "Відкрити файл",
         download: "Завантажити",
@@ -71,6 +146,28 @@ const UI_TEXT = {
         flashDriver: "Драйвер (.ZIP)",
         flashDriverHint: "Завантажте з Silicon Labs, розпакуйте ZIP і запустіть CP210xVCPInstaller_x64.exe для 64-бітної Windows.",
         flashWaiting: "Очікування запуску прошивки…",
+        memory: "Пам’ять",
+        popoutStand: "Стенд ↗",
+        dockBack: "Стенд ↩",
+        focusStandWindow: "Показати вікно стенда",
+        settings: "Налаштування",
+        theme: "Тема",
+        light: "Світла",
+        dark: "Темна",
+        accentColor: "Колір акцентів",
+        frameColor: "Колір панелі та заголовків вікон",
+        pageColor: "Фон застосунку",
+        boardColor: "Фон області стенда",
+        outputColor: "Фон області виводу",
+        editStand: "Розташувати пристрої стенда",
+        editToolbar: "Налаштувати верхню панель",
+        editorFontSize: "Розмір шрифту коду",
+        editorLineHeight: "Міжряддя коду",
+        defaultSpeed: "Швидкість симуляції",
+        memoryRefresh: "Оновлення пам’яті",
+        reduceMotion: "Менше анімацій",
+        resetPreferences: "Скинути налаштування та позиції вікон",
+        settingsSaved: "Зміни автоматично зберігаються на цьому пристрої.",
         autosave: "Автозбереження",
         speed: "Швидкість",
         fileName: "Назва файлу",
@@ -79,7 +176,7 @@ const UI_TEXT = {
         lightTheme: "Увімкнути світлу тему",
         darkTheme: "Увімкнути темну тему",
         close: "Закрити",
-        runnerTitle: "Виконання / регістри / пам’ять",
+        runnerTitle: "Виконання / регістри",
         output: "Вивід",
         currentInstruction: "Поточна інструкція",
         resize: "Змінити розмір",
@@ -255,12 +352,41 @@ export function renderStand(params) {
     const cpu = new EmuBoardController(board);
     const liveAudio = new LiveAudioMonitor();
     const root = el("div", { class: "minimalShell" });
+    let personalSettings = loadPersonalSettings();
+    let interfaceLayout = loadInterfaceLayout();
     let uiTheme = localStorage.getItem("st841.ui.theme") === "light" ? "light" : "dark";
     let uiLanguage = localStorage.getItem(UI_LANGUAGE_KEY) === "uk" ? "uk" : "en";
     const t = (key) => UI_TEXT[uiLanguage][key];
     const tr = (english, ukrainian) => uiLanguage === "uk" ? ukrainian : english;
     root.dataset.theme = uiTheme;
     root.dataset.language = uiLanguage;
+    const popoutControls = new Map();
+    let syncPopoutState = () => { };
+    function applyPersonalSettings() {
+        root.style.setProperty("--user-accent", personalSettings.accent);
+        root.style.setProperty("--user-accent-ink", contrastText(personalSettings.accent));
+        const frame = uiTheme === "light" ? personalSettings.frameLight : personalSettings.frameDark;
+        root.style.setProperty("--user-frame", frame);
+        root.style.setProperty("--user-frame-ink", contrastText(frame));
+        const light = uiTheme === "light";
+        const page = light ? personalSettings.pageLight : personalSettings.pageDark;
+        const boardColor = light ? personalSettings.boardLight : personalSettings.boardDark;
+        const outputColor = light ? personalSettings.outputLight : personalSettings.outputDark;
+        root.style.setProperty("--user-page", page);
+        root.style.setProperty("--user-board", boardColor);
+        root.style.setProperty("--user-output", outputColor);
+        root.style.setProperty("--user-output-ink", contrastText(outputColor));
+        root.style.setProperty("--code-font-size", `${personalSettings.editorFontSize}px`);
+        root.style.setProperty("--code-line-height", String(personalSettings.editorLineHeight));
+        root.style.setProperty("--code-gutter-width", `${Math.round(personalSettings.editorFontSize * 3.2)}px`);
+        root.dataset.reduceMotion = personalSettings.reduceMotion ? "true" : "false";
+        syncPopoutState();
+    }
+    const savePersonalSettings = () => {
+        localStorage.setItem(PERSONAL_SETTINGS_KEY, JSON.stringify(personalSettings));
+        applyPersonalSettings();
+    };
+    applyPersonalSettings();
     document.documentElement.style.colorScheme = uiTheme;
     document.documentElement.lang = uiLanguage === "uk" ? "uk" : "en";
     const windowCard = el("div", { class: "windowCard" });
@@ -268,13 +394,32 @@ export function renderStand(params) {
     const toolbar = el("div", { class: "toolbar" });
     const runBtn = button(t("start"), "green");
     const resetBtn = button(t("reset"));
+    resetBtn.title = t("reset");
+    resetBtn.setAttribute("aria-label", t("reset"));
     const stepBtn = button(t("step"));
+    stepBtn.title = t("step");
+    stepBtn.setAttribute("aria-label", t("step"));
     runBtn.classList.add("runControl");
     resetBtn.classList.add("resetControl");
     stepBtn.classList.add("stepControl");
-    const traceBtn = button(t("runner"));
-    const oscilloscopeBtn = button(t("oscilloscope"));
-    const logicEditorBtn = button(t("logicCircuits"));
+    const traceBtn = button(t("runner"), "runnerControl");
+    traceBtn.title = t("runner");
+    traceBtn.setAttribute("aria-label", t("runner"));
+    const memoryBtn = button(t("memory"), "memoryControl");
+    memoryBtn.title = t("memory");
+    memoryBtn.setAttribute("aria-label", t("memory"));
+    const popoutStandBtn = button("↗", "popoutStandControl iconOnlyBtn");
+    popoutStandBtn.title = t("popoutStand");
+    popoutStandBtn.setAttribute("aria-label", t("popoutStand"));
+    const settingsBtn = button("⚙", "settingsControl");
+    settingsBtn.title = t("settings");
+    settingsBtn.setAttribute("aria-label", t("settings"));
+    const oscilloscopeBtn = button(t("oscilloscope"), "scopeControl");
+    oscilloscopeBtn.title = t("oscilloscope");
+    oscilloscopeBtn.setAttribute("aria-label", t("oscilloscope"));
+    const logicEditorBtn = button(t("logicCircuits"), "logicControl");
+    logicEditorBtn.title = t("logicCircuits");
+    logicEditorBtn.setAttribute("aria-label", t("logicCircuits"));
     const modeSelect = el("select", { class: "samplePicker" });
     modeSelect.append(option("asm", "ASM"), option("c", "C"));
     const fileNameInput = el("input", { class: "fileNameInput mono", value: "main", title: t("fileName") });
@@ -286,24 +431,23 @@ export function renderStand(params) {
     openFileBtn.textContent = t("openFile");
     const downloadFileBtn = el("button", { class: "fileMenuItem", type: "button" });
     downloadFileBtn.textContent = t("download");
+    const saveAsBtn = el("button", { class: "fileMenuItem", type: "button" });
+    saveAsBtn.textContent = tr("Save as…", "Зберегти як…");
     const downloadHexBtn = el("button", { class: "fileMenuItem", type: "button" });
     downloadHexBtn.textContent = t("downloadHex");
     const autosaveBtn = el("button", { class: "fileMenuItem autosaveMenuItem", type: "button" });
     autosaveBtn.textContent = t("autosave");
     const fileInput = el("input", { type: "file", accept: ".c,.h,.asm,.a51,.txt", class: "hiddenFileInput" });
-    fileMenu.append(openFileBtn, downloadFileBtn, downloadHexBtn, autosaveBtn);
+    fileMenu.append(openFileBtn, downloadFileBtn, saveAsBtn, downloadHexBtn, autosaveBtn);
     fileMenuWrap.append(fileMenuBtn, fileMenu, fileInput);
     const speedGroup = el("div", { class: "speedGroup" });
-    const speedLabel = el("span", { class: "speedLabel" });
-    speedLabel.textContent = t("speed");
-    speedGroup.appendChild(speedLabel);
-    const speedMultipliers = [1, 10, 100, 1000, 10000];
-    const speedButtons = speedMultipliers.map((speed) => {
-        const node = button(String(speed), speed === 1 ? "speed active" : "speed");
-        node.addEventListener("click", () => setSpeed(speed));
-        speedGroup.appendChild(node);
-        return { speed, node };
-    });
+    const speedSelect = el("select", { class: "speedSelect", title: t("speed") });
+    for (const speed of [1, 10, 100, 1000, 10000]) {
+        speedSelect.append(option(String(speed), `${speed}x`));
+    }
+    speedSelect.value = String(personalSettings.speed);
+    speedSelect.addEventListener("change", () => setSpeed(Number(speedSelect.value)));
+    speedGroup.append(speedSelect);
     const fullscreenBtn = button("⛶", "fullscreenBtn");
     fullscreenBtn.title = t("fullscreen");
     const themeBtn = button("☀", "themeBtn");
@@ -311,29 +455,138 @@ export function renderStand(params) {
     languageBtn.title = t("language");
     languageBtn.setAttribute("aria-label", t("language"));
     const runGroup = el("div", { class: "toolbarGroup runGroup" });
-    runGroup.append(runBtn, resetBtn, stepBtn);
+    runGroup.append(runBtn, stepBtn, resetBtn);
     const projectGroup = el("div", { class: "toolbarGroup projectGroup" });
     projectGroup.append(fileNameInput, modeSelect, fileMenuWrap);
     const toolsGroup = el("div", { class: "toolbarGroup toolsGroup" });
-    const flashBtn = button("↥", "flashControl");
+    const moreWrap = el("div", { class: "toolbarMore" });
+    const moreBtn = button(tr("More ⋯", "Ще ⋯"));
+    moreBtn.setAttribute("aria-expanded", "false");
+    const moreMenu = el("div", { class: "toolbarMoreMenu hidden" });
+    const extraActions = el("div", { class: "toolbarExtraActions" });
+    moreWrap.append(moreBtn, moreMenu);
+    moreBtn.addEventListener("click", () => {
+        const open = moreMenu.classList.contains("hidden");
+        moreMenu.classList.toggle("hidden", !open);
+        moreBtn.setAttribute("aria-expanded", String(open));
+    });
+    document.addEventListener("pointerdown", (event) => {
+        if (event.target instanceof Node && !moreWrap.contains(event.target)) {
+            moreMenu.classList.add("hidden");
+            moreBtn.setAttribute("aria-expanded", "false");
+        }
+    });
+    const flashBtn = button("↑", "flashControl iconOnlyBtn");
     flashBtn.title = "Flash ADuC841";
     flashBtn.setAttribute("aria-label", "Flash ADuC841");
-    toolsGroup.append(flashBtn, traceBtn, oscilloscopeBtn, logicEditorBtn);
-    toolbar.append(runGroup, projectGroup, toolsGroup, speedGroup, themeBtn, languageBtn, fullscreenBtn);
+    toolsGroup.append(flashBtn, traceBtn, memoryBtn, oscilloscopeBtn, logicEditorBtn);
+    toolbar.append(runGroup, toolsGroup, speedGroup, moreWrap, settingsBtn);
+    const toolbarGroups = {
+        run: runGroup,
+        project: projectGroup,
+        tools: toolsGroup,
+        speed: speedGroup,
+        theme: themeBtn,
+        language: languageBtn,
+        fullscreen: fullscreenBtn,
+    };
+    const toolbarControls = {
+        start: runBtn,
+        reset: resetBtn,
+        step: stepBtn,
+        fileName: fileNameInput,
+        languageMode: modeSelect,
+        fileMenu: fileMenuWrap,
+        flash: flashBtn,
+        runner: traceBtn,
+        memory: memoryBtn,
+        oscilloscope: oscilloscopeBtn,
+        circuits: logicEditorBtn,
+    };
+    function applyToolbarLayout() {
+        const compact = root.dataset.standPopped === "true";
+        moreWrap.classList.toggle("layoutHidden", !compact);
+        moreMenu.classList.add("hidden");
+        moreBtn.setAttribute("aria-expanded", "false");
+        if (compact) {
+            extraActions.prepend(stepBtn, logicEditorBtn);
+        }
+        else {
+            runGroup.insertBefore(stepBtn, resetBtn);
+            toolsGroup.appendChild(logicEditorBtn);
+        }
+        for (const id of interfaceLayout.toolbar.order) {
+            if (compact && id === "project")
+                moreMenu.appendChild(projectGroup);
+            else if (compact && (id === "theme" || id === "language" || id === "fullscreen"))
+                extraActions.appendChild(toolbarGroups[id]);
+            else
+                toolbar.insertBefore(toolbarGroups[id], moreWrap);
+        }
+        moreMenu.appendChild(extraActions);
+        for (const id of TOOLBAR_GROUP_IDS)
+            toolbarGroups[id].classList.toggle("layoutHidden", !interfaceLayout.toolbar.visible[id]);
+        for (const id of TOOLBAR_CONTROL_IDS)
+            toolbarControls[id].classList.toggle("layoutHidden", !interfaceLayout.toolbar.controls[id]);
+        const scale = interfaceLayout.toolbar.scale;
+        toolbar.style.zoom = String(scale);
+        windowCard.style.setProperty("--user-toolbar-height", `${Math.round(58 * scale)}px`);
+        settingsBtn.classList.remove("layoutHidden");
+    }
+    applyToolbarLayout();
     syncThemeButton();
     windowCard.appendChild(toolbar);
-    const debugModal = el("div", { class: "debugModal hidden" });
-    const debugCard = el("div", { class: "debugCard" });
-    const debugHead = el("div", { class: "debugHead" });
-    const debugTitle = el("div", { class: "debugTitle" });
+    // Escape the toolbar's horizontal scroll clipping.
+    windowCard.appendChild(fileMenu);
+    const floatingWindows = [];
+    const focusFloatingWindow = (element) => {
+        windowCard.querySelectorAll(".floatingWindow").forEach((item) => item.style.zIndex = "70");
+        element.style.zIndex = "71";
+    };
+    const runnerWindow = createFloatingWindow(windowCard, "runnerWindow", "st841.ui.runnerWindow", focusFloatingWindow);
+    const debugModal = runnerWindow.element;
+    const debugTitle = runnerWindow.title;
     debugTitle.textContent = t("runnerTitle");
-    const debugClose = button(t("close"));
-    debugClose.classList.add("debugClose");
-    debugHead.append(debugTitle, debugClose);
+    const debugClose = runnerWindow.closeButton;
+    const debugHead = debugModal.querySelector(".floatingWindowHead");
+    const runnerSettingsBtn = button("⚙", "runnerSettingsButton");
+    runnerSettingsBtn.title = tr("Runner settings", "Налаштування Runner");
+    debugHead.insertBefore(runnerSettingsBtn, debugClose);
     const debugBody = el("div", { class: "debugBody" });
-    debugCard.append(debugHead, debugBody);
-    debugModal.appendChild(debugCard);
-    windowCard.appendChild(debugModal);
+    const runnerPreferences = el("div", { class: "runnerPreferences layoutHidden" });
+    const runnerBlocks = [
+        ["current", "Current instruction", "Поточна інструкція"], ["inputs", "Inputs / buses", "Ввід / шини"],
+        ["cpu", "CPU registers", "Регістри CPU"], ["ports", "Ports / SFR", "Порти / SFR"],
+        ["bank", "R0–R7", "R0–R7"], ["motor", "Motor", "Двигун"], ["lcd", "LCD cells", "Комірки LCD"],
+        ["flow", "Execution flow", "Потік виконання"], ["trace", "Trace", "Трасування"],
+    ];
+    let runnerHidden = [];
+    try {
+        const saved = JSON.parse(localStorage.getItem("st841.ui.runnerHidden") || "[]");
+        if (Array.isArray(saved))
+            runnerHidden = saved.filter((id) => typeof id === "string");
+    }
+    catch { /* defaults */ }
+    function applyRunnerPreferences() {
+        for (const [id] of runnerBlocks)
+            debugBody.querySelectorAll(`[data-runner-block="${id}"]`).forEach((node) => node.classList.toggle("layoutHidden", runnerHidden.includes(id)));
+    }
+    function renderRunnerPreferences() {
+        runnerPreferences.innerHTML = runnerBlocks.map(([id, en, uk]) => `<label><input type="checkbox" data-runner-toggle="${id}" ${runnerHidden.includes(id) ? "" : "checked"}> ${escapeHtml(tr(en, uk))}</label>`).join("");
+    }
+    runnerSettingsBtn.addEventListener("click", () => { renderRunnerPreferences(); runnerPreferences.classList.toggle("layoutHidden"); });
+    runnerPreferences.addEventListener("change", (event) => {
+        const input = event.target;
+        const id = input.dataset.runnerToggle;
+        if (!id)
+            return;
+        runnerHidden = runnerHidden.filter((item) => item !== id);
+        if (!input.checked)
+            runnerHidden.push(id);
+        localStorage.setItem("st841.ui.runnerHidden", JSON.stringify(runnerHidden));
+        applyRunnerPreferences();
+    });
+    runnerWindow.body.append(runnerPreferences, debugBody);
     const flashLogModal = el("div", { class: "debugModal flashLogModal hidden" });
     const flashLogCard = el("div", { class: "debugCard flashLogCard" });
     const flashLogHead = el("div", { class: "debugHead" });
@@ -348,7 +601,9 @@ export function renderStand(params) {
     flashDriverLink.title = t("flashDriverHint");
     flashDriverLink.textContent = t("flashDriver");
     const flashLogCopy = button(t("flashCopy"));
-    const flashLogClose = button(t("close"));
+    const flashLogClose = button("×", "windowIconButton");
+    flashLogClose.title = t("close");
+    flashLogClose.setAttribute("aria-label", t("close"));
     flashLogActions.append(flashDriverLink, flashLogCopy, flashLogClose);
     flashLogHead.append(flashLogTitle, flashLogActions);
     const flashLogHint = el("div", { class: "flashLogHint" });
@@ -358,12 +613,49 @@ export function renderStand(params) {
     flashLogModal.appendChild(flashLogCard);
     windowCard.appendChild(flashLogModal);
     const motorPanel = createMotorPanel({
+        windowParent: windowCard,
+        focusWindow: focusFloatingWindow,
         motor: board.extraDevices.motor,
         audio: board.extraDevices.audio,
         getScopeSignal: (source) => board.scope.getSignal(source),
         setScopeRecording: (enabled) => board.scope.setRecordingEnabled(enabled),
         setScopeSource: (source) => board.scope.setActiveSource(source),
     });
+    const memoryTable = new MemoryTable(cpu, {
+        tr,
+        onModify: () => {
+            syncDeviceBadges();
+            renderDebugPanel();
+            if (memoryWindow.isOpen())
+                memoryTable.update();
+        },
+    });
+    const memoryWindow = createFloatingWindow(windowCard, "memoryWindow", "st841.ui.memoryWindow", focusFloatingWindow);
+    const settingsWindow = createFloatingWindow(windowCard, "settingsWindow", "st841.ui.settingsWindow", focusFloatingWindow);
+    const layoutWindow = createFloatingWindow(windowCard, "layoutWindow", "st841.ui.layoutWindow", focusFloatingWindow);
+    const saveAsWindow = createFloatingWindow(windowCard, "saveAsWindow", "st841.ui.saveAsWindow", focusFloatingWindow);
+    const saveAsForm = el("form", { class: "saveAsForm" });
+    const saveAsLabel = el("label");
+    const saveAsLabelText = el("span");
+    const saveAsName = el("input", { type: "text", required: "", class: "saveAsName" });
+    saveAsLabel.append(saveAsLabelText, saveAsName);
+    const saveAsSubmit = el("button", { type: "submit", class: "topBtn" });
+    saveAsForm.append(saveAsLabel, saveAsSubmit);
+    saveAsWindow.body.append(saveAsForm);
+    saveAsForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const name = saveAsName.value.trim();
+        if (!name)
+            return;
+        fileNameInput.value = name.replace(/[\\/:*?"<>|]+/g, "_").replace(/\.(c|asm|a51|txt)$/i, "");
+        scheduleAutosave();
+        saveAsWindow.close();
+        downloadFileBtn.click();
+    });
+    floatingWindows.push(runnerWindow.element, memoryWindow.element, settingsWindow.element, layoutWindow.element);
+    let layoutMode = null;
+    let selectedStandItem = "lcd";
+    memoryWindow.body.appendChild(memoryTable.element);
     // Do not accumulate high-frequency scope samples until the user opens it.
     board.scope.setRecordingEnabled(false);
     windowCard.appendChild(motorPanel.element);
@@ -371,9 +663,11 @@ export function renderStand(params) {
     windowCard.appendChild(logicEditor.element);
     const relocalizePanels = () => window.queueMicrotask(() => {
         localizeStaticSubtree(motorPanel.element, uiLanguage);
+        localizeStaticSubtree(motorPanel.scopeElement, uiLanguage);
         localizeStaticSubtree(logicEditor.element, uiLanguage);
     });
     motorPanel.element.addEventListener("click", relocalizePanels);
+    motorPanel.scopeElement.addEventListener("click", relocalizePanels);
     logicEditor.element.addEventListener("click", relocalizePanels);
     const mainRow = el("div", { class: "mainRow" });
     const boardPane = el("section", { class: "boardPane" });
@@ -386,32 +680,101 @@ export function renderStand(params) {
     canvas.height = 720;
     boardSurface.appendChild(canvas);
     boardPane.appendChild(boardSurface);
+    const standWindow = createFloatingWindow(windowCard, "standFloatingWindow", "st841.ui.standWindow", focusFloatingWindow);
+    let standFloating = false;
+    let popupReturnsFloating = false;
+    standWindow.title.textContent = tr("Virtual stand", "Віртуальний стенд");
+    const standReturnBtn = button("↩", "topBtn floatingWindowClose");
+    standReturnBtn.title = tr("Return stand to layout", "Повернути стенд у макет");
+    standReturnBtn.setAttribute("aria-label", standReturnBtn.title);
+    standWindow.closeButton.before(standReturnBtn);
+    standReturnBtn.addEventListener("click", dockStandInPage);
+    standWindow.closeButton.addEventListener("click", dockStandInPage);
     const boardOverlays = el("div", { class: "boardOverlayMini" });
     boardSurface.appendChild(boardOverlays);
+    const PENCIL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>`;
+    const POPOUT_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`;
+    const DOCK_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v1"/></svg>`;
+    const standQuickActions = el("div", { class: "standQuickActions" });
+    const standEditBtn = el("button", { class: "standQuickBtn standQuickEditBtn", type: "button", title: t("editStand") });
+    standEditBtn.innerHTML = PENCIL_SVG;
+    standEditBtn.setAttribute("aria-label", t("editStand"));
+    const standPopoutBtn = el("button", { class: "standQuickBtn standQuickPopoutBtn", type: "button", title: t("popoutStand") });
+    standPopoutBtn.innerHTML = POPOUT_SVG;
+    standPopoutBtn.setAttribute("aria-label", t("popoutStand"));
+    const standFloatBtn = el("button", { class: "standQuickBtn", type: "button", title: tr("Float stand inside this page", "Плаваючий стенд на цій сторінці") });
+    standFloatBtn.textContent = "▣";
+    standFloatBtn.setAttribute("aria-label", standFloatBtn.title);
+    standFloatBtn.addEventListener("click", (event) => { event.stopPropagation(); if (standFloating)
+        dockStandInPage();
+    else
+        openFloatingStand(); });
+    standQuickActions.append(standEditBtn, standFloatBtn, standPopoutBtn);
+    boardPane.insertBefore(standQuickActions, boardSurface);
+    const updateBoardScale = () => {
+        if (standFloating && boardSurface.parentElement === standWindow.body) {
+            const width = Math.max(1, Math.min(standWindow.body.clientWidth - 16, (standWindow.body.clientHeight - 16) * .78));
+            boardSurface.style.width = `${width}px`;
+        }
+        const width = boardSurface.clientWidth;
+        if (width > 0) {
+            // Keep the backup's 1.1 scale at 462px and scale every DOM device
+            // together with the canvas when either window is resized.
+            const scale = width / 420;
+            boardSurface.style.setProperty("--board-scale", scale.toFixed(3));
+            if (layoutMode === "stand") {
+                applyStandLayout();
+            }
+        }
+    };
+    const boardResizeObserver = new ResizeObserver(() => {
+        updateBoardScale();
+    });
+    boardResizeObserver.observe(boardSurface);
+    boardResizeObserver.observe(standWindow.body);
+    standEditBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (layoutMode === "stand") {
+            closeLayoutEditor();
+        }
+        else {
+            openLayoutEditor("stand");
+        }
+    });
+    standPopoutBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleStandPopout();
+    });
     boardSurface.addEventListener("pointerdown", () => {
         editor.blur();
     });
-    // Typed as ScopeSource so motorPanel.open() gets a checked value instead of
-    // a widened `string` (previously a TS2345 error).
-    const scopeHitAreas = [
-        { source: "sevenSeg", x: 428, y: 44, w: 232, h: 104 },
-        { source: "ledBar", x: 38, y: 188, w: 232, h: 56 },
-        { source: "matrix", x: 82, y: 266, w: 132, h: 186 },
-        { source: "lcd", x: 404, y: 262, w: 268, h: 184 },
-    ];
+    const drawnDeviceIds = ["sevenSeg", "ledBar", "matrix", "lcd"];
     const scopeSourceAtPointer = (event) => {
         const rect = canvas.getBoundingClientRect();
         const x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width;
         const y = ((event.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height;
-        return scopeHitAreas.find((area) => x >= area.x && x <= area.x + area.w && y >= area.y && y <= area.y + area.h)?.source ?? null;
+        for (const id of drawnDeviceIds) {
+            const item = interfaceLayout.stand[id];
+            if (!item.visible)
+                continue;
+            const meta = STAND_ITEMS[id];
+            const left = item.customized ? item.x * canvas.width / 100 : meta.x * canvas.width / 100;
+            const top = item.customized ? item.y * canvas.height / 100 : meta.y * canvas.height / 100;
+            const scale = item.customized ? item.scale : 1;
+            if (x >= left && x <= left + meta.w * scale && y >= top && y <= top + meta.h * scale)
+                return id;
+        }
+        return null;
     };
     canvas.addEventListener("click", (event) => {
+        if (layoutMode === "stand")
+            return;
         const source = scopeSourceAtPointer(event);
         if (source)
             motorPanel.open(source);
     });
     canvas.addEventListener("pointermove", (event) => {
-        canvas.style.cursor = scopeSourceAtPointer(event) ? "pointer" : "default";
+        canvas.style.cursor = layoutMode === "stand" ? "default" : scopeSourceAtPointer(event) ? "pointer" : "default";
     });
     const keypadWrap = el("div", { class: "boardBox keypadBox" });
     keypadWrap.appendChild(caption("KEYPAD"));
@@ -469,12 +832,66 @@ export function renderStand(params) {
     audioHint.textContent = "0 Hz";
     audioWrap.append(audioSpeaker, audioStatus, audioHint);
     boardOverlays.appendChild(audioWrap);
+    const standDomNodes = {
+        keypad: keypadWrap,
+        joystick: joystickWrap,
+        motor: motorWrap,
+        audio: audioWrap,
+    };
+    const layoutHandles = {};
+    for (const id of STAND_ITEM_IDS) {
+        const handle = el("button", { class: "standLayoutHandle", type: "button" });
+        handle.dataset.item = id;
+        handle.setAttribute("aria-label", uiLanguage === "uk" ? STAND_ITEMS[id].uk : STAND_ITEMS[id].en);
+        boardOverlays.appendChild(handle);
+        layoutHandles[id] = handle;
+        let moving = null;
+        handle.addEventListener("pointerdown", (event) => {
+            if (layoutMode !== "stand" || event.button !== 0)
+                return;
+            event.preventDefault();
+            event.stopPropagation();
+            selectedStandItem = id;
+            const rect = boardOverlays.getBoundingClientRect();
+            const handleRect = handle.getBoundingClientRect();
+            const placement = interfaceLayout.stand[id];
+            const x = (handleRect.left - rect.left) / Math.max(1, rect.width) * 100;
+            const y = (handleRect.top - rect.top) / Math.max(1, rect.height) * 100;
+            interfaceLayout.stand[id] = clampStandPlacement(id, { ...placement, x, y, customized: true });
+            moving = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x, y };
+            handle.setPointerCapture(event.pointerId);
+            applyStandLayout();
+            renderLayoutEditor();
+        });
+        handle.addEventListener("pointermove", (event) => {
+            if (!moving || moving.pointerId !== event.pointerId)
+                return;
+            const rect = boardOverlays.getBoundingClientRect();
+            interfaceLayout.stand[id] = clampStandPlacement(id, {
+                ...interfaceLayout.stand[id],
+                x: moving.x + (event.clientX - moving.clientX) / Math.max(1, rect.width) * 100,
+                y: moving.y + (event.clientY - moving.clientY) / Math.max(1, rect.height) * 100,
+                customized: true,
+            });
+            applyStandLayout();
+            syncStandLayoutControls();
+        });
+        const stop = (event) => {
+            if (!moving || moving.pointerId !== event.pointerId)
+                return;
+            moving = null;
+            if (handle.hasPointerCapture(event.pointerId))
+                handle.releasePointerCapture(event.pointerId);
+            saveInterfaceLayout();
+        };
+        handle.addEventListener("pointerup", stop);
+        handle.addEventListener("pointercancel", stop);
+    }
     const editorBox = el("div", { class: "editorBox" });
     const editorTop = el("div", { class: "editorTopMini" });
     const modeTag = el("div", { class: "editorTag mono" });
     modeTag.textContent = "ASM";
-    const runtimeBar = el("div", { class: "runtimeBar mono" });
-    editorTop.append(modeTag, runtimeBar);
+    editorTop.append(modeTag);
     editorBox.appendChild(editorTop);
     const editorShell = el("div", { class: "editorShell" });
     const lineNumbers = el("pre", { class: "lineNumbers mono" });
@@ -502,7 +919,12 @@ export function renderStand(params) {
     editorShell.append(lineNumbers, execMarker, editorStack, scrollSlider);
     editorBox.appendChild(editorShell);
     const statusStrip = el("div", { class: "statusStrip mono" });
-    editorBox.appendChild(statusStrip);
+    const editorStatusRow = el("div", { class: "editorStatusRow" });
+    const outputToggle = button(t("output"), "outputToggle");
+    outputToggle.className = "outputToggle";
+    outputToggle.type = "button";
+    editorStatusRow.append(statusStrip, outputToggle);
+    editorBox.appendChild(editorStatusRow);
     editorPane.appendChild(editorBox);
     const splitHandle = el("div", { class: "splitHandle", title: t("resize") });
     splitHandle.appendChild(el("div", { class: "splitDot" }));
@@ -512,11 +934,29 @@ export function renderStand(params) {
     const messagesTitle = el("div", { class: "messagesTitle" });
     messagesTitle.textContent = t("output");
     const messagesMeta = el("div", { class: "messagesMeta mono" });
-    messagesHead.append(messagesTitle, messagesMeta);
+    const outputClose = button("×", "outputClose");
+    outputClose.className = "outputClose";
+    outputClose.type = "button";
+    outputClose.title = tr("Close output", "Закрити вивід");
+    outputClose.setAttribute("aria-label", outputClose.title);
+    messagesHead.append(messagesTitle, messagesMeta, outputClose);
     messagesPane.appendChild(messagesHead);
     const messagesBody = el("div", { class: "messagesBody" });
     messagesPane.appendChild(messagesBody);
     windowCard.appendChild(messagesPane);
+    const setOutputVisible = (visible) => {
+        root.dataset.outputHidden = String(!visible);
+        messagesPane.style.display = visible ? "" : "none";
+        splitHandle.style.display = visible ? "" : "none";
+        windowCard.style.setProperty("grid-template-rows", "var(--user-toolbar-height, 58px) minmax(0, 1fr) 0 0", "important");
+        outputToggle.setAttribute("aria-expanded", String(visible));
+        outputToggle.hidden = visible;
+        outputToggle.style.display = visible ? "none" : "";
+        localStorage.setItem("st841.ui.outputHidden", String(!visible));
+    };
+    outputClose.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); setOutputVisible(false); });
+    outputToggle.addEventListener("click", () => setOutputVisible(root.dataset.outputHidden === "true"));
+    setOutputVisible(localStorage.getItem("st841.ui.outputHidden") !== "true");
     const context = canvas.getContext("2d");
     if (!context)
         throw new Error("No 2d context");
@@ -527,7 +967,7 @@ export function renderStand(params) {
     let joystickX = 2048;
     let joystickY = 2048;
     let isRunning = false;
-    let currentSpeed = 1;
+    let currentSpeed = personalSettings.speed;
     let sourceMode = "asm";
     let programLoaded = false;
     const flashLogEvents = [];
@@ -563,11 +1003,88 @@ export function renderStand(params) {
     let currentPcToLine = [];
     let lastUiUpdateTs = 0;
     let lastDebugUpdateTs = 0;
+    let lastMemoryUpdateTs = 0;
     // The stand, motor and oscilloscope are visual feedback. 30 FPS is smooth
     // enough and leaves room for the 8051 emulator and the schematic editor.
     const visualFrameIntervalMs = 1000 / 30;
     let lastVisualFrameTs = performance.now() - visualFrameIntervalMs;
     let lastBoardVisualRevision = -1;
+    let boardDrawnLayout = {};
+    function applyStandLayout() {
+        const drawn = {};
+        const parentRect = boardOverlays.getBoundingClientRect();
+        for (const id of STAND_ITEM_IDS) {
+            const placement = interfaceLayout.stand[id];
+            const meta = STAND_ITEMS[id];
+            const handle = layoutHandles[id];
+            handle.classList.toggle("layoutHidden", !placement.visible);
+            handle.classList.toggle("selected", selectedStandItem === id);
+            const node = standDomNodes[id];
+            if (node) {
+                node.classList.toggle("layoutHidden", !placement.visible);
+                if (placement.customized) {
+                    node.style.left = `${placement.x}%`;
+                    node.style.top = `${placement.y}%`;
+                    node.style.right = "auto";
+                    node.style.bottom = "auto";
+                    node.style.width = `${meta.w / 720 * 100}%`;
+                    node.style.transform = `scale(${placement.scale})`;
+                    node.style.transformOrigin = "top left";
+                    handle.style.left = `${placement.x}%`;
+                    handle.style.top = `${placement.y}%`;
+                    handle.style.width = `${meta.w * placement.scale / 720 * 100}%`;
+                    handle.style.height = `${meta.h * placement.scale / 720 * 100}%`;
+                    if (parentRect.width > 0 && parentRect.height > 0) {
+                        const nodeRect = node.getBoundingClientRect();
+                        handle.style.left = `${(nodeRect.left - parentRect.left) / parentRect.width * 100}%`;
+                        handle.style.top = `${(nodeRect.top - parentRect.top) / parentRect.height * 100}%`;
+                        handle.style.width = `${nodeRect.width / parentRect.width * 100}%`;
+                        handle.style.height = `${nodeRect.height / parentRect.height * 100}%`;
+                    }
+                }
+                else {
+                    for (const property of ["left", "top", "right", "bottom", "width", "transform", "transform-origin"]) {
+                        node.style.removeProperty(property);
+                    }
+                    if (parentRect.width > 0 && parentRect.height > 0) {
+                        const nodeRect = node.getBoundingClientRect();
+                        const left = ((nodeRect.left - parentRect.left) / parentRect.width) * 100;
+                        const top = ((nodeRect.top - parentRect.top) / parentRect.height) * 100;
+                        const width = (nodeRect.width / parentRect.width) * 100;
+                        const height = (nodeRect.height / parentRect.height) * 100;
+                        handle.style.left = `${left.toFixed(2)}%`;
+                        handle.style.top = `${top.toFixed(2)}%`;
+                        handle.style.width = `${width.toFixed(2)}%`;
+                        handle.style.height = `${height.toFixed(2)}%`;
+                    }
+                    else {
+                        handle.style.left = `${meta.x}%`;
+                        handle.style.top = `${meta.y}%`;
+                        handle.style.width = `${meta.w / 720 * 100}%`;
+                        handle.style.height = `${meta.h / 720 * 100}%`;
+                    }
+                }
+            }
+            else if (id === "sevenSeg" || id === "ledBar" || id === "matrix" || id === "lcd") {
+                const cx = placement.customized ? placement.x : meta.x;
+                const cy = placement.customized ? placement.y : meta.y;
+                handle.style.left = `${cx}%`;
+                handle.style.top = `${cy}%`;
+                handle.style.width = `${(meta.w * placement.scale / 720 * 100).toFixed(2)}%`;
+                handle.style.height = `${(meta.h * placement.scale / 720 * 100).toFixed(2)}%`;
+                if (!placement.visible || placement.customized)
+                    drawn[id] = placement;
+            }
+        }
+        boardDrawnLayout = drawn;
+        lastBoardVisualRevision = -1;
+    }
+    function saveInterfaceLayout() {
+        localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(interfaceLayout));
+        applyStandLayout();
+        applyToolbarLayout();
+    }
+    applyStandLayout();
     let debugOpen = false;
     let inputDebounce = null;
     let diagnosticLines = new Map();
@@ -687,6 +1204,9 @@ export function renderStand(params) {
     }
     function updateAutosaveButton() {
         const isSaved = lastSavedSignature === currentEditorSignature();
+        const autosaveSetting = settingsWindow.body.querySelector('[data-setting="autosave"]');
+        if (autosaveSetting)
+            autosaveSetting.checked = autosaveEnabled;
         autosaveBtn.classList.remove("saved", "dirty", "disabled");
         if (!autosaveEnabled) {
             autosaveBtn.innerHTML = `<span>${escapeHtml(t("autosave"))}</span><span class="autosaveIcon off">X</span>`;
@@ -852,7 +1372,17 @@ export function renderStand(params) {
     fileMenuBtn.addEventListener("click", (event) => {
         event.stopPropagation();
         fileMenu.classList.toggle("hidden");
+        if (!fileMenu.classList.contains("hidden")) {
+            const anchor = fileMenuBtn.getBoundingClientRect();
+            const frame = windowCard.getBoundingClientRect();
+            fileMenu.style.left = `${Math.max(8, Math.min(windowCard.clientWidth - fileMenu.offsetWidth - 8, anchor.left - frame.left))}px`;
+            fileMenu.style.top = `${anchor.bottom - frame.top + 6}px`;
+            fileMenu.style.maxHeight = `${Math.max(80, frame.bottom - anchor.bottom - 14)}px`;
+            fileMenu.style.overflowY = "auto";
+        }
     });
+    toolbar.addEventListener("scroll", closeFileMenu);
+    window.addEventListener("resize", closeFileMenu);
     document.addEventListener("click", closeFileMenu);
     fileMenu.addEventListener("click", (event) => event.stopPropagation());
     openFileBtn.addEventListener("click", () => {
@@ -889,6 +1419,13 @@ export function renderStand(params) {
         link.remove();
         window.setTimeout(() => URL.revokeObjectURL(link.href), 500);
         messagesMeta.textContent = `downloaded ${currentFileName()}`;
+    });
+    saveAsBtn.addEventListener("click", () => {
+        closeFileMenu();
+        saveAsName.value = currentFileName();
+        saveAsWindow.open();
+        saveAsName.focus();
+        saveAsName.select();
     });
     downloadHexBtn.addEventListener("click", () => {
         closeFileMenu();
@@ -1020,13 +1557,38 @@ export function renderStand(params) {
         syncEditorScrollSlider();
         syncExecMarker();
     });
-    editorShell.addEventListener("wheel", (event) => {
+    let wheelRemainderY = 0;
+    let wheelRemainderX = 0;
+    const scrollEditorWithWheel = (event) => {
+        // Only scroll code when the actual event belongs to the editor.
+        // Coordinate overlap alone also matches floating panels above it.
+        if (!event.composedPath().includes(editorShell))
+            return;
+        // Route both textarea and gutter through the same scroller. Native
+        // textarea wheel chaining is unreliable after the stand is popped out.
+        const rect = editorShell.getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)
+            return;
+        if (event.ctrlKey || (event.target instanceof Element && event.target.closest(".autocompleteMenu")))
+            return;
         event.preventDefault();
-        editor.scrollTop += event.deltaY;
+        event.stopPropagation();
+        const unit = event.deltaMode === 1
+            ? parseFloat(getComputedStyle(editor).lineHeight) || 20
+            : event.deltaMode === 2 ? editor.clientHeight : 1;
+        wheelRemainderY += event.deltaY * unit;
+        wheelRemainderX += event.deltaX * unit;
+        const dy = Math.trunc(wheelRemainderY), dx = Math.trunc(wheelRemainderX);
+        wheelRemainderY -= dy;
+        wheelRemainderX -= dx;
+        editor.scrollTop += dy;
+        editor.scrollLeft += dx;
         lineNumbers.scrollTop = editor.scrollTop;
+        syncHighlightScroll();
         syncEditorScrollSlider();
         syncExecMarker();
-    }, { passive: false });
+    };
+    document.addEventListener("wheel", scrollEditorWithWheel, { passive: false, capture: true });
     scrollSlider.addEventListener("pointerdown", (event) => {
         editorScrollDrag = true;
         scrollSlider.setPointerCapture(event.pointerId);
@@ -1076,17 +1638,57 @@ export function renderStand(params) {
     joystickFace.addEventListener("pointerup", releaseJoystick);
     joystickFace.addEventListener("pointercancel", releaseJoystick);
     traceBtn.addEventListener("click", () => {
+        if (debugOpen) {
+            debugOpen = false;
+            cpu.setTraceEnabled(false);
+            debugModal.classList.add("hidden");
+            traceBtn.classList.remove("active");
+            return;
+        }
         debugOpen = true;
         cpu.setTraceEnabled(true);
-        debugModal.classList.remove("hidden");
+        runnerWindow.open();
+        traceBtn.classList.add("active");
         syncDeviceBadges();
         renderDebugPanel();
+    });
+    memoryBtn.addEventListener("click", () => {
+        if (memoryWindow.isOpen()) {
+            memoryWindow.close();
+            memoryBtn.classList.remove("active");
+        }
+        else {
+            memoryWindow.open();
+            memoryTable.update();
+            memoryBtn.classList.add("active");
+        }
+    });
+    memoryWindow.closeButton.addEventListener("click", () => {
+        memoryBtn.classList.remove("active");
+    });
+    settingsBtn.addEventListener("click", () => {
+        if (settingsWindow.isOpen()) {
+            settingsWindow.close();
+            settingsBtn.classList.remove("active");
+            return;
+        }
+        if (layoutMode)
+            closeLayoutEditor();
+        renderSettingsPanel();
+        settingsWindow.open();
+        settingsBtn.classList.add("active");
+    });
+    settingsWindow.closeButton.addEventListener("click", () => {
+        settingsBtn.classList.remove("active");
     });
     oscilloscopeBtn.addEventListener("click", () => {
         motorPanel.openScope("general");
     });
     logicEditorBtn.addEventListener("click", () => {
         logicEditor.open();
+    });
+    popoutStandBtn.addEventListener("click", () => {
+        toggleStandPopout();
     });
     flashBtn.addEventListener("click", async () => {
         if (!isAduc841SerialSupported()) {
@@ -1147,6 +1749,7 @@ export function renderStand(params) {
         debugOpen = false;
         cpu.setTraceEnabled(false);
         debugModal.classList.add("hidden");
+        traceBtn.classList.remove("active");
     });
     flashLogClose.addEventListener("click", () => {
         flashLogModal.classList.add("hidden");
@@ -1207,24 +1810,76 @@ export function renderStand(params) {
         syncRunButton();
         updateRuntimeBar();
     });
-    stepBtn.addEventListener("click", async () => {
-        liveAudio.touch();
-        const result = compileAndRender(false);
-        if (!result.ok)
-            return;
-        if (!currentHex.trim()) {
-            showMessages([], "", true);
+    let stepHoldTimer;
+    let stepRepeatTimer;
+    let stepHeld = false;
+    let stepBusy = false;
+    let suppressStepClick = false;
+    const stopStepHold = () => {
+        stepHeld = false;
+        clearTimeout(stepHoldTimer);
+        clearInterval(stepRepeatTimer);
+    };
+    async function performSingleStep(recompile = true) {
+        if (stepBusy)
+            return false;
+        stepBusy = true;
+        try {
+            liveAudio.touch();
+            if (recompile && !compileAndRender(false).ok)
+                return false;
+            if (!currentHex.trim()) {
+                showMessages([], "", true);
+                return false;
+            }
+            if (!programLoaded) {
+                await cpu.loadHex(currentHex);
+                programLoaded = true;
+            }
+            cpu.step(1);
+            isRunning = false;
+            syncRunButton();
+            updateRuntimeBar();
+            return true;
+        }
+        finally {
+            stepBusy = false;
+        }
+    }
+    stepBtn.addEventListener("click", (event) => {
+        if (event.detail > 0 && suppressStepClick) {
+            suppressStepClick = false;
             return;
         }
-        if (!programLoaded) {
-            await cpu.loadHex(currentHex);
-            programLoaded = true;
-        }
-        cpu.step(1);
-        isRunning = false;
-        syncRunButton();
-        updateRuntimeBar();
+        void performSingleStep();
     });
+    stepBtn.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0)
+            return;
+        stopStepHold();
+        stepHeld = true;
+        suppressStepClick = true;
+        stepBtn.setPointerCapture(event.pointerId);
+        void performSingleStep().then((ok) => { if (!ok)
+            stopStepHold(); });
+        stepHoldTimer = setTimeout(() => {
+            if (!stepHeld)
+                return;
+            stepRepeatTimer = setInterval(() => {
+                if (stepHeld && !stepBusy)
+                    void performSingleStep(false).then((ok) => { if (!ok)
+                        stopStepHold(); });
+            }, 1000 / personalSettings.stepRepeatHz);
+        }, 350);
+    });
+    stepBtn.addEventListener("pointerup", stopStepHold);
+    stepBtn.addEventListener("pointercancel", () => { suppressStepClick = false; stopStepHold(); });
+    stepBtn.addEventListener("lostpointercapture", stopStepHold);
+    window.addEventListener("blur", stopStepHold);
+    document.addEventListener("visibilitychange", () => { if (document.hidden)
+        stopStepHold(); });
+    runBtn.addEventListener("click", stopStepHold);
+    resetBtn.addEventListener("click", stopStepHold);
     function compileAndRender(expand = false) {
         if (sourceMode === "c") {
             const c = checkC(editor.value);
@@ -1292,27 +1947,7 @@ export function renderStand(params) {
     }
     function updateRuntimeBar(ok = true) {
         isRunning = cpu.isRunning();
-        const motor = board.extraDevices.motor?.getTelemetry?.();
-        const audio = board.extraDevices.audio?.getTelemetry?.();
         syncRunButton();
-        const runtimeText = [
-            !ok ? "ERROR" : cpu.isRunning() ? "RUNNING" : "READY",
-            `PC ${hexWord(cpu.getPC())}`,
-            `L${currentPcToLine.find((item) => (item.pc & 0xffff) === (cpu.getPC() & 0xffff))?.line ?? "-"}`,
-            `OP ${hexByte(cpu.readCode(cpu.getPC()))}`,
-            decodeInstruction(cpu),
-            `ACC ${hexByte(cpu.getSfr(SFR.acc))}`,
-            `P0 ${hexByte(board.readPort("P0"))}`,
-            `P2 ${hexByte(board.readPort("P2"))}`,
-            motor ? `Motor ${Math.round(motor.duty * 100)}%` : "Motor -",
-            motor ? `RPM ${Math.round(motor.currentRpm)}` : "RPM -",
-            audio ? `Audio ${audio.frequencyHz.toFixed(0)}Hz` : "Audio -",
-            audio ? `DAC ${audio.leftVolts.toFixed(2)}V` : "DAC -",
-            `x${currentSpeed}`,
-            cpu.isRunning() ? "RUN" : "STOP",
-        ].join("   ");
-        if (runtimeBar.textContent !== runtimeText)
-            runtimeBar.textContent = runtimeText;
         syncDeviceBadges();
         renderDebugPanel();
         syncExecMarker();
@@ -1365,7 +2000,6 @@ export function renderStand(params) {
         const bank = (psw >> 3) & 0x03;
         const regBase = bank * 8;
         const sp = cpu.getSfr(SFR.sp);
-        const spDelta = ((sp - 0x07) & 0xff).toString(10);
         const regsR = Array.from({ length: 8 }, (_, i) => [
             `R${i}`,
             hexByte(cpu.readIram(regBase + i)),
@@ -1412,20 +2046,6 @@ export function renderStand(params) {
         const lcdRows = typeof board.extraDevices.lcd?.getDebugRows === "function"
             ? board.extraDevices.lcd.getDebugRows()
             : [];
-        const stackRows = [0, 1, 2, 3, 4, 5, 6, 7].map((d) => {
-            const addr = (sp - d) & 0xff;
-            return [hexByte(addr), hexByte(cpu.readIram(addr)), d === 0 ? "SP" : ""];
-        });
-        const iramRows = [];
-        for (let i = 0; i < 32; i += 8) {
-            iramRows.push([
-                hexByte(i),
-                [0, 1, 2, 3, 4, 5, 6, 7].map((d) => hexByte(cpu.readIram(i + d))).join(" "),
-            ]);
-        }
-        const xramPreview = [0, 1, 2, 3, 4, 5, 6, 7]
-            .map((d) => hexByte(cpu.readXram(d)))
-            .join(" ");
         const traceRows = trace.slice(-22).map((item) => {
             const current = (item.pc & 0xffff) === pc;
             const line = currentPcToLine.find((m) => (m.pc & 0xffff) === (item.pc & 0xffff));
@@ -1434,13 +2054,19 @@ export function renderStand(params) {
         const codeBytes = [0, 1, 2, 3].map((d) => hexByte(cpu.readCode(pc + d))).join(" ");
         const kv = (label, value, extra = "") => `<div class="runnerKv ${extra}"><span>${escapeHtml(label)}</span><b>${escapeHtml(String(value))}</b></div>`;
         const kvList = (items) => items.map(([label, value]) => kv(String(label), value)).join("");
-        const card = (title, body, extra = "") => `<section class="runnerCard ${extra}"><h3>${escapeHtml(title)}</h3>${body}</section>`;
-        const smallTable = (rows, headers) => `<table class="runnerTable"><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${rows
-            .map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(String(cell))}</td>`).join("")}</tr>`)
-            .join("")}</tbody></table>`;
-        debugBody.innerHTML = `
+        const card = (title, body, extra = "", id = "") => `<section class="runnerCard ${extra}" data-runner-block="${id}"><h3>${escapeHtml(title)}</h3>${body}</section>`;
+        if (!debugBody.querySelector(".runnerPanel")) {
+            debugBody.innerHTML = `
       <div class="runnerPanel">
-        <section class="runnerHero">
+        <section class="runnerHero" id="runnerHero" data-runner-block="current"></section>
+        <div class="runnerGrid" id="runnerGrid"></div>
+        <section class="runnerCard runnerTraceCard" id="runnerTraceCard" data-runner-block="trace"></section>
+      </div>
+    `;
+        }
+        const heroEl = debugBody.querySelector("#runnerHero");
+        if (heroEl) {
+            heroEl.innerHTML = `
           <div>
             <div class="runnerLabel">${tr("Currently executing", "Зараз виконується")}</div>
             <div class="runnerInstruction mono">${escapeHtml(decodeInstruction(cpu))}</div>
@@ -1453,9 +2079,11 @@ export function renderStand(params) {
             <span>bytes ${codeBytes}</span>
             <span>${tr("line", "рядок")}: ${exactBadge}</span>
           </div>
-        </section>
-
-        <div class="runnerGrid">
+        `;
+        }
+        const gridEl = debugBody.querySelector("#runnerGrid");
+        if (gridEl) {
+            gridEl.innerHTML = `
           ${card(tr("Input / buses", "Ввід / шини"), `
             ${kv("P3.6", p36, p36.startsWith("RX") ? "warn" : "ok")}
             ${kv(tr("Pressed", "Натиснуто"), pressedKeys || "-")}
@@ -1464,28 +2092,24 @@ export function renderStand(params) {
             ${kv("Keypad col3", hexByte(keypadBus.col3))}
             ${kv("Joystick X", joy.x)}
             ${kv("Joystick Y", joy.y)}
-          `)}
+          `, "", "inputs")}
 
-          ${card(tr("CPU registers", "Регістри CPU"), kvList(coreRegs) + `<div class="runnerSub mono">${tr("Bank", "Банк")} ${bank} - ${tr("SP delta", "зміщення SP")} +${spDelta}</div>`)}
+          ${card(tr("CPU registers", "Регістри CPU"), kvList(coreRegs) + `<div class="runnerSub mono">${tr("Bank", "Банк")} ${bank} · ${tr("SP is an address, not used depth", "SP — це адреса, а не зайнята глибина")}</div>`, "", "cpu")}
 
-          ${card(tr("Ports / SFR", "Порти / SFR"), kvList(ports) + `<hr class="runnerHr"/>` + kvList(sfrs))}
+          ${card(tr("Ports / SFR", "Порти / SFR"), kvList(ports) + `<hr class="runnerHr"/>` + kvList(sfrs), "", "ports")}
 
-          ${card(tr("R0-R7 of active bank", "R0-R7 активного банку"), kvList(regsR))}
+          ${card(tr("R0-R7 of active bank", "R0-R7 активного банку"), kvList(regsR), "", "bank")}
 
           ${card(tr("Motor", "Двигун"), kvList([
-            [tr("active", "активний"), motor ? String(motor.active) : "-"],
-            [tr("duty", "заповнення"), motor ? `${Math.round(motor.duty * 100)}%` : "-"],
-            [tr("frequency", "частота"), motor ? `${motor.frequencyHz.toFixed(1)} Hz` : "-"],
-            [tr("current rpm", "поточні об/хв"), motor ? motor.currentRpm.toFixed(1) : "-"],
-            [tr("target rpm", "цільові об/хв"), motor ? motor.targetRpm.toFixed(1) : "-"],
-            [tr("source", "джерело"), motor ? motor.sourceLabel : "-"],
-        ]))}
+                [tr("active", "активний"), motor ? String(motor.active) : "-"],
+                [tr("duty", "заповнення"), motor ? `${Math.round(motor.duty * 100)}%` : "-"],
+                [tr("frequency", "частота"), motor ? `${motor.frequencyHz.toFixed(1)} Hz` : "-"],
+                [tr("current rpm", "поточні об/хв"), motor ? motor.currentRpm.toFixed(1) : "-"],
+                [tr("target rpm", "цільові об/хв"), motor ? motor.targetRpm.toFixed(1) : "-"],
+                [tr("source", "джерело"), motor ? motor.sourceLabel : "-"],
+            ]), "", "motor")}
 
-          ${card(tr("LCD cells", "Комірки LCD"), `<pre class="runnerPre mono">${escapeHtml(lcdRows.join("\n") || "-")}</pre>`, "runnerLcdCard")}
-
-          ${card(tr("Stack", "Стек"), smallTable(stackRows, [tr("Address", "Адреса"), tr("Value", "Значення"), tr("Mark", "Позначка")]))}
-
-          ${card("IRAM 0x00..0x1F", smallTable(iramRows, [tr("Address", "Адреса"), tr("Bytes", "Байти")]) + `${kv("XRAM 00..07", xramPreview)}`)}
+          ${card(tr("LCD cells", "Комірки LCD"), `<pre class="runnerPre mono">${escapeHtml(lcdRows.join("\n") || "-")}</pre>`, "runnerLcdCard", "lcd")}
 
           ${card(tr("Execution flow", "Потік виконання"), `
             ${kv(tr("current PC", "поточний PC"), hexWord(pc))}
@@ -1494,22 +2118,29 @@ export function renderStand(params) {
             ${kv(tr("last CALL/RET", "останній CALL/RET"), flow.lastCallRet)}
             ${kv(tr("same-PC streak", "повторів PC"), flow.streak)}
             ${kv(tr("recent PCs", "останні PC"), flow.recent)}
-          `, "wide")}
-        </div>
-
-        <section class="runnerCard runnerTraceCard">
+          `, "wide", "flow")}
+        `;
+        }
+        const traceEl = debugBody.querySelector("#runnerTraceCard");
+        applyRunnerPreferences();
+        if (traceEl) {
+            traceEl.innerHTML = `
           <h3>${tr("Trace - latest instructions", "Трасування — останні інструкції")}</h3>
           <table class="runnerTrace mono">
             <thead><tr><th>tick</th><th>PC</th><th>OP</th><th>ASM</th><th>ACC</th><th>P0</th><th>P2</th></tr></thead>
             <tbody>${traceRows || `<tr><td colspan="7">-</td></tr>`}</tbody>
           </table>
-        </section>
-      </div>
-    `;
+        `;
+        }
     }
     function syncRunButton() {
         runBtn.textContent = isRunning ? t("stop") : t("start");
         runBtn.className = `topBtn runControl ${isRunning ? "red" : "green"}`;
+        const popRun = popoutControls.get("run");
+        if (popRun) {
+            popRun.textContent = runBtn.textContent;
+            popRun.className = runBtn.className;
+        }
     }
     async function toggleSimulatorFullscreen() {
         try {
@@ -1532,18 +2163,232 @@ export function renderStand(params) {
         fullscreenBtn.setAttribute("aria-label", fullscreenBtn.title);
         fullscreenBtn.classList.toggle("active", active);
     }
+    let standPopoutWindow = null;
+    function openFloatingStand() {
+        if (standPopoutWindow && !standPopoutWindow.closed) {
+            popupReturnsFloating = false;
+            dockStandBack();
+        }
+        standFloating = true;
+        root.dataset.standPopped = "true";
+        boardPane.style.display = "none";
+        mainRow.style.gridTemplateColumns = "1fr";
+        standWindow.body.appendChild(boardSurface);
+        standReturnBtn.before(standQuickActions);
+        standWindow.open();
+        updateBoardScale();
+        syncPopoutButtons();
+    }
+    function dockStandInPage() {
+        standFloating = false;
+        standWindow.close();
+        boardSurface.style.removeProperty("width");
+        boardPane.appendChild(boardSurface);
+        boardPane.insertBefore(standQuickActions, boardSurface);
+        delete root.dataset.standPopped;
+        boardPane.style.removeProperty("display");
+        mainRow.style.removeProperty("grid-template-columns");
+        updateBoardScale();
+        syncPopoutButtons();
+    }
+    function syncPopoutButtons() {
+        const isPopped = Boolean(standPopoutWindow && !standPopoutWindow.closed);
+        applyToolbarLayout();
+        popoutStandBtn.textContent = isPopped ? "↩" : "↗";
+        popoutStandBtn.title = t(isPopped ? "dockBack" : "popoutStand");
+        popoutStandBtn.setAttribute("aria-label", popoutStandBtn.title);
+        popoutStandBtn.classList.toggle("active", isPopped);
+        standPopoutBtn.textContent = isPopped ? "↩" : "↗";
+        standPopoutBtn.title = t(isPopped ? "dockBack" : "popoutStand");
+        standPopoutBtn.setAttribute("aria-label", standPopoutBtn.title);
+        const dockBtn = popoutControls.get("dock");
+        if (dockBtn) {
+            dockBtn.title = t("dockBack");
+            dockBtn.setAttribute("aria-label", dockBtn.title);
+        }
+    }
+    syncPopoutState = function () {
+        if (!standPopoutWindow || standPopoutWindow.closed)
+            return;
+        try {
+            const popDoc = standPopoutWindow.document;
+            for (const [id, original] of [["reset", resetBtn], ["runner", traceBtn], ["memory", memoryBtn], ["scope", oscilloscopeBtn], ["flash", flashBtn]]) {
+                const control = popoutControls.get(id);
+                if (control) {
+                    control.textContent = original.textContent;
+                    control.title = original.title || original.textContent || "";
+                }
+            }
+            popDoc.documentElement.style.colorScheme = uiTheme;
+            popDoc.documentElement.lang = uiLanguage === "uk" ? "uk" : "en";
+            popDoc.body.dataset.theme = uiTheme;
+            popDoc.body.dataset.language = uiLanguage;
+            if (layoutMode)
+                popDoc.body.dataset.layoutEdit = layoutMode;
+            else
+                delete popDoc.body.dataset.layoutEdit;
+            const rootStyle = window.getComputedStyle(root);
+            for (const prop of ["--user-accent", "--user-accent-ink", "--user-frame", "--user-frame-ink", "--user-page", "--user-board", "--user-output", "--user-output-ink"]) {
+                popDoc.documentElement.style.setProperty(prop, rootStyle.getPropertyValue(prop));
+            }
+        }
+        catch { /* ignore cross-origin or closed */ }
+    };
+    function toggleStandPopout() {
+        if (standPopoutWindow && !standPopoutWindow.closed) {
+            dockStandBack();
+        }
+        else {
+            openStandPopout();
+        }
+    }
+    function openStandPopout() {
+        if (standPopoutWindow && !standPopoutWindow.closed) {
+            standPopoutWindow.focus();
+            return;
+        }
+        try {
+            const popupWidth = Math.max(320, Math.round(window.screen.availWidth * 0.30));
+            const popupHeight = Math.max(360, window.screen.availHeight - 60);
+            standPopoutWindow = window.open("", "st841_stand_window", `width=${popupWidth},height=${popupHeight},menubar=no,toolbar=no,location=no,status=no,resizable=yes`);
+        }
+        catch {
+            standPopoutWindow = null;
+        }
+        if (!standPopoutWindow) {
+            statusStrip.innerHTML = `<span class="statusErrorLabel">${tr("Popup window was blocked by browser. Please allow popups.", "Спливаюче вікно заблоковано браузером. Дозвольте спливаючі вікна.")}</span>`;
+            return;
+        }
+        root.dataset.standPopped = "true";
+        popupReturnsFloating = standFloating;
+        standFloating = false;
+        standWindow.close();
+        boardSurface.style.removeProperty("width");
+        boardPane.style.display = "none";
+        mainRow.style.gridTemplateColumns = "1fr";
+        splitHandle.style.display = "";
+        const popDoc = standPopoutWindow.document;
+        popDoc.open();
+        popDoc.write(`<!DOCTYPE html>
+<html lang="${uiLanguage === "uk" ? "uk" : "en"}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <base href="${document.baseURI}">
+  <title>${tr("ADuC841 Virtual Stand", "Віртуальний стенд ADuC841")}</title>
+</head>
+<body class="standPopoutBody minimalShell" data-theme="${uiTheme}" data-language="${uiLanguage}">
+</body>
+</html>`);
+        popDoc.close();
+        for (const node of Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))) {
+            if (node instanceof HTMLLinkElement) {
+                const link = popDoc.createElement("link");
+                link.rel = "stylesheet";
+                link.href = node.href;
+                popDoc.head.appendChild(link);
+            }
+            else {
+                popDoc.head.appendChild(node.cloneNode(true));
+            }
+        }
+        popDoc.documentElement.style.colorScheme = uiTheme;
+        const rootStyle = window.getComputedStyle(root);
+        for (const prop of ["--user-accent", "--user-accent-ink", "--user-frame", "--user-frame-ink", "--user-page", "--user-board", "--user-output", "--user-output-ink"]) {
+            popDoc.documentElement.style.setProperty(prop, rootStyle.getPropertyValue(prop));
+        }
+        const popBar = popDoc.createElement("header");
+        popBar.className = "popoutStandBar";
+        const popActions = popDoc.createElement("div");
+        popActions.className = "popoutStandActions";
+        const popDockBtn = popDoc.createElement("button");
+        popDockBtn.className = "topBtn blue";
+        popDockBtn.textContent = "↩";
+        popDockBtn.title = t("dockBack");
+        popDockBtn.setAttribute("aria-label", popDockBtn.title);
+        popoutControls.set("dock", popDockBtn);
+        popDockBtn.addEventListener("click", () => dockStandBack());
+        for (const [id, original] of [
+            ["run", runBtn], ["reset", resetBtn], ["runner", traceBtn],
+            ["memory", memoryBtn], ["scope", oscilloscopeBtn], ["flash", flashBtn],
+        ]) {
+            const control = popDoc.createElement("button");
+            control.className = original.className;
+            control.textContent = original.textContent;
+            control.title = original.title || original.textContent || "";
+            control.addEventListener("click", () => {
+                if (id !== "run" && id !== "reset")
+                    window.focus();
+                original.click();
+            });
+            popoutControls.set(id, control);
+            popActions.appendChild(control);
+        }
+        popActions.append(popDockBtn);
+        popBar.append(popActions);
+        popActions.prepend(standQuickActions);
+        const popStage = popDoc.createElement("main");
+        popStage.className = "standPopoutStage";
+        popDoc.body.append(popBar, popStage);
+        popStage.appendChild(boardSurface);
+        updateBoardScale();
+        standPopoutWindow.addEventListener("beforeunload", () => dockStandBack());
+        const pollClosedInterval = window.setInterval(() => {
+            if (!standPopoutWindow || standPopoutWindow.closed) {
+                window.clearInterval(pollClosedInterval);
+                dockStandBack();
+            }
+        }, 800);
+        syncPopoutButtons();
+        syncPopoutState();
+    }
+    function dockStandBack() {
+        if (!standPopoutWindow)
+            return;
+        const popWindow = standPopoutWindow;
+        const restoreFloating = popupReturnsFloating;
+        popupReturnsFloating = false;
+        standPopoutWindow = null;
+        popoutControls.clear();
+        delete root.dataset.standPopped;
+        boardPane.style.removeProperty("display");
+        mainRow.style.removeProperty("grid-template-columns");
+        splitHandle.style.removeProperty("display");
+        if (boardSurface.parentElement !== boardPane) {
+            boardPane.appendChild(boardSurface);
+        }
+        boardPane.insertBefore(standQuickActions, boardSurface);
+        updateBoardScale();
+        if (popWindow && !popWindow.closed) {
+            try {
+                popWindow.close();
+            }
+            catch { /* ignore */ }
+        }
+        syncPopoutButtons();
+        if (restoreFloating)
+            openFloatingStand();
+    }
+    window.addEventListener("beforeunload", () => {
+        if (standPopoutWindow && !standPopoutWindow.closed) {
+            standPopoutWindow.close();
+        }
+    });
     function setUiTheme(theme) {
         uiTheme = theme === "light" ? "light" : "dark";
         root.dataset.theme = uiTheme;
+        applyPersonalSettings();
         document.documentElement.style.colorScheme = uiTheme;
         localStorage.setItem("st841.ui.theme", uiTheme);
         lastBoardVisualRevision = -1;
         syncThemeButton();
+        syncPopoutState();
+        renderSettingsPanel();
     }
     function switchUiThemeWithWave(theme, event) {
         const nextTheme = theme === "light" ? "light" : "dark";
         const transitionDocument = document;
-        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        const reducedMotion = personalSettings.reduceMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         const buttonRect = themeBtn.getBoundingClientRect();
         const x = event.clientX || buttonRect.left + buttonRect.width / 2;
         const y = event.clientY || buttonRect.top + buttonRect.height / 2;
@@ -1583,6 +2428,336 @@ export function renderStand(params) {
         themeBtn.setAttribute("aria-label", themeBtn.title);
         themeBtn.classList.toggle("active", light);
     }
+    function renderSettingsPanel() {
+        const body = settingsWindow.body;
+        body.innerHTML = `
+          <div class="personalSettings">
+            <p class="settingsHelp">${t("settingsSaved")}</p>
+            <label class="settingsField"><span>${t("theme")}</span><select data-setting="theme"><option value="dark">${t("dark")}</option><option value="light">${t("light")}</option></select></label>
+            <label class="settingsField"><span>${t("language")}</span><select data-setting="language"><option value="uk">Українська</option><option value="en">English</option></select></label>
+            <label class="settingsField"><span>${t("accentColor")}</span><input type="color" data-setting="accent" /></label>
+            <label class="settingsField"><span>${t("frameColor")}</span><input type="color" data-setting="frame" /></label>
+            <label class="settingsField"><span>${t("pageColor")}</span><input type="color" data-setting="page" /></label>
+            <label class="settingsField"><span>${t("boardColor")}</span><input type="color" data-setting="board" /></label>
+            <label class="settingsField"><span>${t("outputColor")}</span><input type="color" data-setting="output" /></label>
+            <label class="settingsField"><span>${t("editorFontSize")} <output data-value="font"></output></span><input type="range" min="8" max="22" step="1" data-setting="font" /></label>
+            <label class="settingsField"><span>${t("editorLineHeight")} <output data-value="line"></output></span><input type="range" min="1" max="1.9" step="0.05" data-setting="line" /></label>
+            <label class="settingsField"><span>${t("defaultSpeed")}</span><select data-setting="speed">${[1, 10, 100, 1000, 10000].map((speed) => `<option value="${speed}">×${speed}</option>`).join("")}</select></label>
+            <label class="settingsField"><span>${t("memoryRefresh")}</span><select data-setting="refresh"><option value="100">100 ms</option><option value="250">250 ms</option><option value="500">500 ms</option></select></label>
+            <label class="settingsField"><span>${tr("Hold Step: steps per second", "Утримання Step: кроків за секунду")}</span><select data-setting="stepRepeat">${[2, 5, 10, 20, 50].map((hz) => `<option value="${hz}">${hz}</option>`).join("")}</select></label>
+            <label class="settingsCheck"><input type="checkbox" data-setting="autosave" /><span>${t("autosave")}</span></label>
+            <label class="settingsCheck"><input type="checkbox" data-setting="motion" /><span>${t("reduceMotion")}</span></label>
+            <div class="settingsLayoutActions">
+              <button type="button" data-layout-open="stand">${t("editStand")}</button>
+              <button type="button" data-layout-open="toolbar">${t("editToolbar")}</button>
+            </div>
+            <div class="settingsLayoutActions">
+              <button type="button" data-panel-open="runner">${t("runnerTitle")}</button>
+              <button type="button" data-panel-open="runner-settings">${tr("Runner settings", "Налаштування Runner")}</button>
+              <button type="button" data-panel-open="memory">${t("memory")}</button>
+              <button type="button" data-panel-open="scope">${t("oscilloscope")}</button>
+              <button type="button" data-panel-open="motor">${tr("Motor panel", "Панель двигуна")}</button>
+              <button type="button" data-panel-open="stand">${tr("Floating stand", "Плаваючий стенд")}</button>
+              <button type="button" data-panel-open="reset">${tr("Reset panel positions and sizes", "Скинути розташування та розміри панелей")}</button>
+            </div>
+            <button type="button" class="settingsReset">${t("resetPreferences")}</button>
+          </div>
+        `;
+        const select = (name) => body.querySelector(`[data-setting="${name}"]`);
+        const color = (name) => body.querySelector(`[data-setting="${name}"]`);
+        select("theme").value = uiTheme;
+        select("language").value = uiLanguage;
+        color("accent").value = personalSettings.accent;
+        color("frame").value = uiTheme === "light" ? personalSettings.frameLight : personalSettings.frameDark;
+        color("page").value = uiTheme === "light" ? personalSettings.pageLight : personalSettings.pageDark;
+        color("board").value = uiTheme === "light" ? personalSettings.boardLight : personalSettings.boardDark;
+        color("output").value = uiTheme === "light" ? personalSettings.outputLight : personalSettings.outputDark;
+        color("font").value = String(personalSettings.editorFontSize);
+        color("line").value = String(personalSettings.editorLineHeight);
+        body.querySelector('[data-value="font"]').textContent = `${personalSettings.editorFontSize}px`;
+        body.querySelector('[data-value="line"]').textContent = personalSettings.editorLineHeight.toFixed(2);
+        select("speed").value = String(currentSpeed);
+        select("refresh").value = String(personalSettings.memoryRefreshMs);
+        select("stepRepeat").value = String(personalSettings.stepRepeatHz);
+        color("autosave").checked = autosaveEnabled;
+        color("motion").checked = personalSettings.reduceMotion;
+        select("theme").addEventListener("change", () => setUiTheme(select("theme").value === "light" ? "light" : "dark"));
+        select("language").addEventListener("change", () => setUiLanguage(select("language").value === "uk" ? "uk" : "en"));
+        color("accent").addEventListener("input", () => { personalSettings.accent = color("accent").value; savePersonalSettings(); });
+        color("frame").addEventListener("input", () => {
+            if (uiTheme === "light")
+                personalSettings.frameLight = color("frame").value;
+            else
+                personalSettings.frameDark = color("frame").value;
+            savePersonalSettings();
+        });
+        color("page").addEventListener("input", () => {
+            if (uiTheme === "light")
+                personalSettings.pageLight = color("page").value;
+            else
+                personalSettings.pageDark = color("page").value;
+            savePersonalSettings();
+        });
+        color("board").addEventListener("input", () => {
+            if (uiTheme === "light")
+                personalSettings.boardLight = color("board").value;
+            else
+                personalSettings.boardDark = color("board").value;
+            savePersonalSettings();
+        });
+        color("output").addEventListener("input", () => {
+            if (uiTheme === "light")
+                personalSettings.outputLight = color("output").value;
+            else
+                personalSettings.outputDark = color("output").value;
+            savePersonalSettings();
+        });
+        color("font").addEventListener("input", () => {
+            personalSettings.editorFontSize = Number(color("font").value);
+            body.querySelector('[data-value="font"]').textContent = `${personalSettings.editorFontSize}px`;
+            savePersonalSettings();
+            syncExecMarker();
+            syncEditorScrollSlider();
+        });
+        color("line").addEventListener("input", () => {
+            personalSettings.editorLineHeight = Number(color("line").value);
+            body.querySelector('[data-value="line"]').textContent = personalSettings.editorLineHeight.toFixed(2);
+            savePersonalSettings();
+            syncExecMarker();
+            syncEditorScrollSlider();
+        });
+        select("speed").addEventListener("change", () => setSpeed(Number(select("speed").value)));
+        select("refresh").addEventListener("change", () => { personalSettings.memoryRefreshMs = Number(select("refresh").value); savePersonalSettings(); });
+        select("stepRepeat").addEventListener("change", () => { stopStepHold(); personalSettings.stepRepeatHz = Number(select("stepRepeat").value); savePersonalSettings(); });
+        color("autosave").addEventListener("change", () => {
+            autosaveEnabled = color("autosave").checked;
+            localStorage.setItem("st841.editor.autosave.enabled", autosaveEnabled ? "1" : "0");
+            updateAutosaveButton();
+            if (autosaveEnabled)
+                autosaveEditor();
+        });
+        color("motion").addEventListener("change", () => { personalSettings.reduceMotion = color("motion").checked; savePersonalSettings(); });
+        body.querySelector('[data-layout-open="stand"]').addEventListener("click", () => openLayoutEditor("stand"));
+        body.querySelector('[data-layout-open="toolbar"]').addEventListener("click", () => openLayoutEditor("toolbar"));
+        body.querySelectorAll("[data-panel-open]").forEach((button) => button.addEventListener("click", () => {
+            const panel = button.dataset.panelOpen;
+            settingsWindow.close();
+            if (panel === "runner" || panel === "runner-settings") {
+                traceBtn.click();
+                if (!runnerWindow.isOpen())
+                    traceBtn.click();
+                if (panel === "runner-settings") {
+                    renderRunnerPreferences();
+                    runnerPreferences.classList.remove("layoutHidden");
+                }
+            }
+            else if (panel === "memory") {
+                memoryWindow.open();
+                memoryBtn.classList.add("active");
+            }
+            else if (panel === "scope")
+                motorPanel.openScope("general");
+            else if (panel === "motor")
+                motorPanel.open("motor");
+            else if (panel === "stand")
+                openFloatingStand();
+            else if (panel === "reset") {
+                [runnerWindow, memoryWindow, settingsWindow, layoutWindow, saveAsWindow, standWindow].forEach((panel) => panel.resetPosition());
+                motorPanel.resetWindows();
+                settingsWindow.open();
+            }
+        }));
+        body.querySelector(".settingsReset").addEventListener("click", () => {
+            personalSettings = { ...DEFAULT_PERSONAL_SETTINGS };
+            interfaceLayout = defaultInterfaceLayout();
+            saveInterfaceLayout();
+            savePersonalSettings();
+            setSpeed(personalSettings.speed);
+            autosaveEnabled = true;
+            localStorage.setItem("st841.editor.autosave.enabled", "1");
+            updateAutosaveButton();
+            memoryWindow.resetPosition();
+            runnerWindow.resetPosition();
+            motorPanel.resetWindows();
+            settingsWindow.resetPosition();
+            layoutWindow.resetPosition();
+            setUiTheme("dark");
+            setUiLanguage("en");
+        });
+    }
+    function openLayoutEditor(mode) {
+        layoutMode = mode;
+        root.dataset.layoutEdit = mode;
+        settingsWindow.close();
+        memoryWindow.close();
+        standEditBtn.classList.toggle("active", mode === "stand");
+        applyStandLayout();
+        syncPopoutState();
+        renderLayoutEditor();
+        layoutWindow.open();
+        if (!localStorage.getItem("st841.ui.layoutWindow")) {
+            layoutWindow.element.style.left = `${Math.max(8, windowCard.clientWidth - layoutWindow.element.offsetWidth - 12)}px`;
+            layoutWindow.element.style.top = "68px";
+        }
+    }
+    function closeLayoutEditor() {
+        layoutMode = null;
+        delete root.dataset.layoutEdit;
+        standEditBtn.classList.remove("active");
+        syncPopoutState();
+        layoutWindow.close();
+    }
+    layoutWindow.closeButton.addEventListener("click", closeLayoutEditor);
+    function syncStandLayoutControls() {
+        if (layoutMode !== "stand")
+            return;
+        const body = layoutWindow.body;
+        const placement = interfaceLayout.stand[selectedStandItem];
+        for (const name of ["x", "y", "scale"]) {
+            const slider = body.querySelector(`[data-stand-value="${name}"]`);
+            const output = body.querySelector(`[data-stand-output="${name}"]`);
+            if (slider)
+                slider.value = String(name === "scale" ? Math.round(placement.scale * 100) : Math.round(placement[name]));
+            if (output)
+                output.textContent = `${name === "scale" ? Math.round(placement.scale * 100) : Math.round(placement[name])}%`;
+        }
+        for (const id of STAND_ITEM_IDS) {
+            const checkbox = body.querySelector(`[data-stand-visible="${id}"]`);
+            if (checkbox)
+                checkbox.checked = interfaceLayout.stand[id].visible;
+            body.querySelector(`[data-stand-select="${id}"]`)?.classList.toggle("selected", selectedStandItem === id);
+        }
+    }
+    function renderLayoutEditor() {
+        if (!layoutMode)
+            return;
+        const body = layoutWindow.body;
+        const oldScrollTop = body.scrollTop;
+        layoutWindow.title.textContent = layoutMode === "stand" ? t("editStand") : t("editToolbar");
+        if (layoutMode === "stand") {
+            const rows = STAND_ITEM_IDS.map((id) => `
+              <div class="layoutItemRow">
+                <button type="button" data-stand-select="${id}">${uiLanguage === "uk" ? STAND_ITEMS[id].uk : STAND_ITEMS[id].en}</button>
+                <label title="${tr("Show on stand", "Показувати на стенді")}"><input type="checkbox" data-stand-visible="${id}" /> ${tr("Show", "Показати")}</label>
+              </div>
+            `).join("");
+            body.innerHTML = `
+              <div class="layoutEditor">
+                <p class="settingsHelp">${tr("Drag a device directly on the stand, or use the precise controls below. Hidden devices continue working in the simulation.", "Перетягуйте сам пристрій на стенді або змінюйте точні значення нижче. Приховані пристрої продовжують працювати в симуляції.")}</p>
+                <div class="layoutItemList">${rows}</div>
+                <div class="layoutPositionControls">
+                  <strong>${uiLanguage === "uk" ? STAND_ITEMS[selectedStandItem].uk : STAND_ITEMS[selectedStandItem].en}</strong>
+                  <label>X <output data-stand-output="x"></output><input type="range" min="0" max="100" step="1" data-stand-value="x" /></label>
+                  <label>Y <output data-stand-output="y"></output><input type="range" min="0" max="100" step="1" data-stand-value="y" /></label>
+                  <label>${tr("Size", "Розмір")} <output data-stand-output="scale"></output><input type="range" min="50" max="180" step="5" data-stand-value="scale" /></label>
+                  <button type="button" data-layout-reset-item>${tr("Reset selected device", "Скинути вибраний пристрій")}</button>
+                </div>
+                <div class="layoutFooter">
+                  <button type="button" data-layout-reset-all>${tr("Restore all devices", "Повернути всі пристрої")}</button>
+                  <button type="button" data-layout-done>${tr("Done", "Готово")}</button>
+                </div>
+              </div>`;
+            for (const id of STAND_ITEM_IDS) {
+                body.querySelector(`[data-stand-select="${id}"]`).addEventListener("click", () => {
+                    selectedStandItem = id;
+                    applyStandLayout();
+                    renderLayoutEditor();
+                });
+                body.querySelector(`[data-stand-visible="${id}"]`).addEventListener("change", (event) => {
+                    interfaceLayout.stand[id].visible = event.currentTarget.checked;
+                    saveInterfaceLayout();
+                    syncStandLayoutControls();
+                });
+            }
+            for (const name of ["x", "y", "scale"]) {
+                body.querySelector(`[data-stand-value="${name}"]`).addEventListener("input", (event) => {
+                    const value = Number(event.currentTarget.value);
+                    const placement = interfaceLayout.stand[selectedStandItem];
+                    interfaceLayout.stand[selectedStandItem] = clampStandPlacement(selectedStandItem, {
+                        ...placement,
+                        [name]: name === "scale" ? value / 100 : value,
+                        customized: true,
+                    });
+                    saveInterfaceLayout();
+                    syncStandLayoutControls();
+                });
+            }
+            body.querySelector("[data-layout-reset-item]").addEventListener("click", () => {
+                interfaceLayout.stand[selectedStandItem] = defaultInterfaceLayout().stand[selectedStandItem];
+                saveInterfaceLayout();
+                renderLayoutEditor();
+            });
+            body.querySelector("[data-layout-reset-all]").addEventListener("click", () => {
+                interfaceLayout.stand = defaultInterfaceLayout().stand;
+                saveInterfaceLayout();
+                renderLayoutEditor();
+            });
+            syncStandLayoutControls();
+        }
+        else {
+            const groups = interfaceLayout.toolbar.order.map((id, index) => `
+              <div class="layoutItemRow">
+                <label><input type="checkbox" data-toolbar-visible="${id}" ${interfaceLayout.toolbar.visible[id] ? "checked" : ""} /> ${uiLanguage === "uk" ? TOOLBAR_GROUPS[id].uk : TOOLBAR_GROUPS[id].en}</label>
+                <div class="layoutOrderButtons">
+                  <button type="button" data-toolbar-move="${id}" data-direction="-1" ${index === 0 ? "disabled" : ""} aria-label="${tr("Move left", "Пересунути ліворуч")}">←</button>
+                  <button type="button" data-toolbar-move="${id}" data-direction="1" ${index === interfaceLayout.toolbar.order.length - 1 ? "disabled" : ""} aria-label="${tr("Move right", "Пересунути праворуч")}">→</button>
+                </div>
+              </div>
+            `).join("");
+            const controls = TOOLBAR_CONTROL_IDS.map((id) => `
+              <label class="settingsCheck"><input type="checkbox" data-toolbar-control="${id}" ${interfaceLayout.toolbar.controls[id] ? "checked" : ""} /><span>${uiLanguage === "uk" ? TOOLBAR_CONTROLS[id].uk : TOOLBAR_CONTROLS[id].en}</span></label>
+            `).join("");
+            body.innerHTML = `
+              <div class="layoutEditor">
+                <p class="settingsHelp">${tr("Reorder groups with arrows. Uncheck buttons to hide them; the settings button always stays visible so you can restore them.", "Стрілками міняйте порядок груп. Галочкою ховайте кнопки; кнопка налаштувань завжди залишається, щоб їх повернути.")}</p>
+                <div class="layoutSectionTitle">${tr("Toolbar groups", "Групи панелі")}</div>
+                <div class="layoutItemList">${groups}</div>
+                <label class="settingsField"><span>${tr("Toolbar size", "Розмір панелі")} <output data-toolbar-size>${Math.round(interfaceLayout.toolbar.scale * 100)}%</output></span><input type="range" min="80" max="125" step="5" data-toolbar-scale value="${Math.round(interfaceLayout.toolbar.scale * 100)}" /></label>
+                <div class="layoutSectionTitle">${tr("Individual buttons", "Окремі кнопки")}</div>
+                <div class="layoutControlList">${controls}</div>
+                <div class="layoutFooter">
+                  <button type="button" data-layout-reset-all>${tr("Restore toolbar", "Повернути панель")}</button>
+                  <button type="button" data-layout-done>${tr("Done", "Готово")}</button>
+                </div>
+              </div>`;
+            for (const id of TOOLBAR_GROUP_IDS) {
+                body.querySelector(`[data-toolbar-visible="${id}"]`).addEventListener("change", (event) => {
+                    interfaceLayout.toolbar.visible[id] = event.currentTarget.checked;
+                    saveInterfaceLayout();
+                });
+                body.querySelectorAll(`[data-toolbar-move="${id}"]`).forEach((node) => {
+                    node.addEventListener("click", () => {
+                        const order = interfaceLayout.toolbar.order;
+                        const index = order.indexOf(id);
+                        const next = index + Number(node.dataset.direction);
+                        if (next < 0 || next >= order.length)
+                            return;
+                        [order[index], order[next]] = [order[next], order[index]];
+                        saveInterfaceLayout();
+                        renderLayoutEditor();
+                    });
+                });
+            }
+            for (const id of TOOLBAR_CONTROL_IDS) {
+                body.querySelector(`[data-toolbar-control="${id}"]`).addEventListener("change", (event) => {
+                    interfaceLayout.toolbar.controls[id] = event.currentTarget.checked;
+                    saveInterfaceLayout();
+                });
+            }
+            body.querySelector("[data-toolbar-scale]").addEventListener("input", (event) => {
+                interfaceLayout.toolbar.scale = Number(event.currentTarget.value) / 100;
+                body.querySelector("[data-toolbar-size]").textContent = `${Math.round(interfaceLayout.toolbar.scale * 100)}%`;
+                saveInterfaceLayout();
+            });
+            body.querySelector("[data-layout-reset-all]").addEventListener("click", () => {
+                interfaceLayout.toolbar = defaultInterfaceLayout().toolbar;
+                saveInterfaceLayout();
+                renderLayoutEditor();
+            });
+        }
+        body.querySelector("[data-layout-done]").addEventListener("click", closeLayoutEditor);
+        body.scrollTop = oldScrollTop;
+    }
     function setUiLanguage(language) {
         uiLanguage = language;
         localStorage.setItem(UI_LANGUAGE_KEY, uiLanguage);
@@ -1595,28 +2770,85 @@ export function renderStand(params) {
         languageBtn.title = t("language");
         languageBtn.setAttribute("aria-label", t("language"));
         resetBtn.textContent = t("reset");
+        moreBtn.textContent = tr("More ⋯", "Ще ⋯");
+        resetBtn.title = t("reset");
+        resetBtn.setAttribute("aria-label", t("reset"));
         stepBtn.textContent = t("step");
+        stepBtn.title = t("step");
+        stepBtn.setAttribute("aria-label", t("step"));
         traceBtn.textContent = t("runner");
+        traceBtn.title = t("runner");
+        traceBtn.setAttribute("aria-label", t("runner"));
+        memoryBtn.textContent = t("memory");
+        memoryBtn.title = t("memory");
+        memoryBtn.setAttribute("aria-label", t("memory"));
+        popoutStandBtn.textContent = standPopoutWindow && !standPopoutWindow.closed ? "↩" : "↗";
+        popoutStandBtn.title = t(standPopoutWindow && !standPopoutWindow.closed ? "dockBack" : "popoutStand");
+        popoutStandBtn.setAttribute("aria-label", popoutStandBtn.title);
+        settingsBtn.title = t("settings");
+        settingsBtn.setAttribute("aria-label", t("settings"));
         oscilloscopeBtn.textContent = t("oscilloscope");
+        oscilloscopeBtn.title = t("oscilloscope");
+        oscilloscopeBtn.setAttribute("aria-label", t("oscilloscope"));
         logicEditorBtn.textContent = t("logicCircuits");
+        logicEditorBtn.title = t("logicCircuits");
+        logicEditorBtn.setAttribute("aria-label", t("logicCircuits"));
+        flashBtn.textContent = "↑";
         flashBtn.title = "Flash ADuC841";
         flashBtn.setAttribute("aria-label", "Flash ADuC841");
         fileNameInput.title = t("fileName");
         fileMenuBtn.textContent = t("file");
         openFileBtn.textContent = t("openFile");
         downloadFileBtn.textContent = t("download");
+        saveAsBtn.textContent = tr("Save as…", "Зберегти як…");
+        saveAsWindow.title.textContent = tr("Save as…", "Зберегти як…");
+        saveAsLabelText.textContent = tr("File name", "Назва файлу");
+        saveAsSubmit.textContent = tr("Save file", "Зберегти файл");
+        runnerSettingsBtn.title = tr("Runner settings", "Налаштування Runner");
+        renderRunnerPreferences();
         downloadHexBtn.textContent = t("downloadHex");
-        speedLabel.textContent = t("speed");
+        speedSelect.title = t("speed");
+        standEditBtn.title = t("editStand");
+        standEditBtn.setAttribute("aria-label", t("editStand"));
+        standPopoutBtn.title = t(standPopoutWindow && !standPopoutWindow.closed ? "dockBack" : "popoutStand");
+        standPopoutBtn.setAttribute("aria-label", standPopoutBtn.title);
+        standFloatBtn.title = tr("Float stand inside this page", "Плаваючий стенд на цій сторінці");
+        standFloatBtn.setAttribute("aria-label", standFloatBtn.title);
+        standWindow.title.textContent = tr("Virtual stand", "Віртуальний стенд");
+        standReturnBtn.title = tr("Return stand to layout", "Повернути стенд у макет");
+        standReturnBtn.setAttribute("aria-label", standReturnBtn.title);
+        syncPopoutButtons();
+        syncPopoutState();
         debugTitle.textContent = t("runnerTitle");
-        debugClose.textContent = t("close");
+        debugClose.textContent = "×";
+        debugClose.title = t("close");
+        debugClose.setAttribute("aria-label", t("close"));
+        memoryWindow.title.textContent = t("memory");
+        memoryWindow.closeButton.title = t("close");
+        memoryWindow.closeButton.setAttribute("aria-label", t("close"));
+        settingsWindow.title.textContent = t("settings");
+        settingsWindow.closeButton.title = t("close");
+        settingsWindow.closeButton.setAttribute("aria-label", t("close"));
+        layoutWindow.closeButton.title = t("close");
+        layoutWindow.closeButton.setAttribute("aria-label", t("close"));
+        for (const id of STAND_ITEM_IDS)
+            layoutHandles[id].setAttribute("aria-label", uiLanguage === "uk" ? STAND_ITEMS[id].uk : STAND_ITEMS[id].en);
+        if (layoutMode)
+            renderLayoutEditor();
+        memoryTable.refreshLanguage();
+        renderSettingsPanel();
         flashLogTitle.textContent = t("flashTitle");
         flashLogHint.textContent = t("flashHint");
         flashDriverLink.title = t("flashDriverHint");
         flashDriverLink.textContent = t("flashDriver");
-        flashLogClose.textContent = t("close");
+        flashLogClose.title = t("close");
+        flashLogClose.setAttribute("aria-label", t("close"));
         flashLogCopy.textContent = t(flashCopyState === "copied" ? "flashCopied" : flashCopyState === "failed" ? "flashCopyFailed" : "flashCopy");
         renderFlashLog();
         messagesTitle.textContent = t("output");
+        outputToggle.textContent = t("output");
+        outputClose.title = tr("Close output", "Закрити вивід");
+        outputClose.setAttribute("aria-label", outputClose.title);
         execMarker.title = t("currentInstruction");
         splitHandle.title = t("resize");
         const motorCaption = motorWrap.querySelector(".boardCaption");
@@ -1624,6 +2856,7 @@ export function renderStand(params) {
             motorCaption.textContent = t("motor");
         motorHint.textContent = t("stepperMotor");
         localizeStaticSubtree(motorPanel.element, uiLanguage);
+        localizeStaticSubtree(motorPanel.scopeElement, uiLanguage);
         localizeStaticSubtree(logicEditor.element, uiLanguage);
         syncRunButton();
         syncThemeButton();
@@ -1636,10 +2869,13 @@ export function renderStand(params) {
     }
     function setSpeed(speed) {
         currentSpeed = speed;
+        personalSettings.speed = speed;
+        savePersonalSettings();
         cpu.setSpeed(speedToBatch(currentSpeed));
-        for (const item of speedButtons) {
-            item.node.className = `topBtn speed ${item.speed === currentSpeed ? "active" : ""}`.trim();
-        }
+        speedSelect.value = String(speed);
+        const speedSetting = settingsWindow.body.querySelector('[data-setting="speed"]');
+        if (speedSetting)
+            speedSetting.value = String(speed);
         updateRuntimeBar();
     }
     function updateLineNumbers() {
@@ -1681,7 +2917,7 @@ export function renderStand(params) {
             execMarker.style.setProperty("--marker-opacity", "0");
             return;
         }
-        const lineHeight = 13 * 1.55;
+        const lineHeight = personalSettings.editorFontSize * personalSettings.editorLineHeight;
         const y = 10 + (hit.line - 1) * lineHeight - editor.scrollTop + lineHeight / 2 - 4;
         if (y < -8 || y > editor.clientHeight + 8) {
             execMarker.style.setProperty("--marker-opacity", "0");
@@ -1730,6 +2966,10 @@ export function renderStand(params) {
     }
     function draw() {
         const now = performance.now();
+        if (memoryWindow.isOpen() && now - lastMemoryUpdateTs >= personalSettings.memoryRefreshMs) {
+            memoryTable.update();
+            lastMemoryUpdateTs = now;
+        }
         if (now - lastVisualFrameTs >= visualFrameIntervalMs) {
             const visualDtSeconds = Math.max(0.001, Math.min(0.05, (now - lastVisualFrameTs) / 1000));
             lastVisualFrameTs = now;
@@ -1737,7 +2977,7 @@ export function renderStand(params) {
             liveAudio.update(board.extraDevices.audio?.getTelemetry?.() ?? null);
             const boardVisualRevision = board.getVisualRevision();
             if (boardVisualRevision !== lastBoardVisualRevision) {
-                board.render(drawContext, canvas.width, canvas.height, uiTheme);
+                board.render(drawContext, canvas.width, canvas.height, uiTheme, boardDrawnLayout);
                 lastBoardVisualRevision = boardVisualRevision;
             }
             motorPanel.renderFrame(visualDtSeconds);

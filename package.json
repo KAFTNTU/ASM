@@ -21,7 +21,8 @@
     "test:runtime:run": "node ./scripts/test-compiler-runtime.mjs",
     "test:runtime": "npm run export:web && npm run test:runtime:run",
     "test:compilers": "npm run export:web && npm run test:asm:run && npm run test:c51:run && npm run test:language:run && npm run test:hints && npm run test:runtime:run && npm run test:regressions:run",
-    "test": "npm run typecheck && npm run test:compilers && npm run test:scope && npm run test:logic",
+    "test": "npm run typecheck && npm run test:compilers && npm run test:scope && npm run test:logic && npm run test:memory:run",
+    "test:memory:run": "node ./scripts/test-memory-window.mjs",
     "test:logic": "npm run export:web && node ./scripts/test-logic-circuits.mjs && node ./scripts/test-logic-routing.mjs && node ./scripts/test-logic-geometry.mjs",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "test:regressions:run": "node ./scripts/test-bugfix-regressions.mjs"

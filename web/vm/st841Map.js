@@ -1,4 +1,4 @@
-import { ADUC841_SFR } from "../mcu/aduc841.js";
+import { ADUC841_SFR } from "../mcu/aduc841.js?v=mv1gqa5k";
 export const ST841_MAP = {
     ledBarAddr: 0x07,
     sevenSegAddrs: [0x01, 0x02, 0x03, 0x04],

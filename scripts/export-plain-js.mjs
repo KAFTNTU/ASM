@@ -14,6 +14,7 @@ import ts from "typescript";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const srcDir = join(root, "src");
 const outDir = join(root, "web");
+const buildVersion = Date.now().toString(36);
 
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
@@ -50,7 +51,7 @@ console.log(`Exported plain JS app to ${outDir}`);
 function patchJs(relPath, code) {
   let patched = code.replace(
     /from\s+["'](\.\.?\/[^"']+)["']/g,
-    (_match, specifier) => `from "${appendJsExtension(specifier)}"`,
+    (_match, specifier) => `from "${appendJsExtension(specifier)}?v=${buildVersion}"`,
   );
 
   if (relPath === join("vm", "emu8051Wasm.ts")) {

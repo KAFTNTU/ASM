@@ -88,6 +88,24 @@ export class Emu8051Wasm {
     return this.exports.emu_read_iram(this.cpuPtr, addr & 0xff) & 0xff;
   }
 
+  writeIram(addr: number, value: number): void {
+    const iramAddr = addr & 0x7f;
+    const next = value & 0xff;
+    if (this.readIram(iramAddr) === next) return;
+    const mem = new Uint8Array(this.exports.memory.buffer);
+    // The bundled WASM uses the em8051 WASM32 layout: mLowerData starts at
+    // byte 14 of the CPU struct. Verify each write against the exported reader
+    // so an incompatible binary cannot silently corrupt another CPU field.
+    const offset = this.cpuPtr + 14 + iramAddr;
+    if (offset < 0 || offset >= mem.length) throw new Error("IRAM address is outside WASM memory");
+    const previous = mem[offset];
+    mem[offset] = next;
+    if (this.readIram(iramAddr) !== next) {
+      mem[offset] = previous;
+      throw new Error("IRAM write failed: emulator memory layout differs from the bundled WASM");
+    }
+  }
+
   readXram(addr: number): number {
     return this.exports.emu_read_xram(this.cpuPtr, addr & 0xffff) & 0xff;
   }

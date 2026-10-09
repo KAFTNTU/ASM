@@ -3,6 +3,13 @@ import { ScopeRecorder } from "./scopeRecorder";
 import { ST841_MAP } from "./st841Map";
 
 export type PortName = "P0" | "P1" | "P2" | "P3";
+export type DrawnDeviceId = "sevenSeg" | "ledBar" | "matrix" | "lcd";
+export type BoardDrawnLayout = Partial<Record<DrawnDeviceId, {
+  x: number; // percent of the 720 x 720 board canvas
+  y: number;
+  scale: number;
+  visible: boolean;
+}>>;
 
 export class Board {
   public readonly bus = new PeripheralBus();
@@ -272,29 +279,47 @@ export class Board {
     this.scope.captureDigital("keypad", rxMode && isKeypadAddress(address));
   }
 
-  render(ctx: CanvasRenderingContext2D, w: number, h: number, theme: "dark" | "light" = "dark"): void {
+  render(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    theme: "dark" | "light" = "dark",
+    deviceLayout?: BoardDrawnLayout,
+  ): void {
     const light = theme === "light";
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = light ? "#c3ced9" : "#0b1118";
+    ctx.fillStyle = light ? "#d9e1e9" : "#18212c";
     ctx.fillRect(0, 0, w, h);
 
-    const boardX = 10;
-    const boardY = 10;
-    const boardW = w - 20;
-    const boardH = h - 20;
+    const boardX = 0;
+    const boardY = 0;
+    const boardW = w;
+    const boardH = h;
 
     ctx.fillStyle = light ? "#d9e1e9" : "#18212c";
     ctx.strokeStyle = light ? "#8f9eae" : "#394758";
     ctx.lineWidth = 2;
-    roundRect(ctx, boardX, boardY, boardW, boardH, 12, true, true);
+    roundRect(ctx, boardX, boardY, boardW, boardH, 12, true, false);
     ctx.save();
     ctx.beginPath();
     roundRect(ctx, boardX, boardY, boardW, boardH, 14, false, false);
     ctx.clip();
-    this.extraDevices.sevenSeg?.render(ctx, boardX + boardW - 282, boardY + 34);
-    this.extraDevices.ledBar?.render(ctx, boardX + 28, boardY + 178);
-    this.extraDevices.matrix?.render(ctx, boardX + 72, boardY + 256);
-    this.extraDevices.lcd?.render(ctx, boardX + boardW - 306, boardY + 252);
+    const drawDevice = (id: DrawnDeviceId, x: number, y: number) => {
+      const layout = deviceLayout?.[id];
+      if (layout?.visible === false) return;
+      const device = this.extraDevices[id];
+      if (!device?.render) return;
+      ctx.save();
+      ctx.translate(layout ? w * layout.x / 100 : x, layout ? h * layout.y / 100 : y);
+      const scale = layout?.scale ?? 1;
+      ctx.scale(scale, scale);
+      device.render(ctx, 0, 0);
+      ctx.restore();
+    };
+    drawDevice("sevenSeg", boardX + boardW - 282, boardY + 34);
+    drawDevice("ledBar", boardX + 28, boardY + 178);
+    drawDevice("matrix", boardX + 72, boardY + 256);
+    drawDevice("lcd", boardX + boardW - 306, boardY + 252);
     ctx.restore();
   }
 }

@@ -1,4 +1,4 @@
-import { ADUC841_BITS, ADUC841_INTERRUPTS, ADUC841_SFR, hex8, hex16, } from "../mcu/aduc841.js";
+import { ADUC841_BITS, ADUC841_INTERRUPTS, ADUC841_SFR, hex8, hex16, } from "../mcu/aduc841.js?v=mv1gqa5k";
 /** Every classic MCS-51 mnemonic accepted by the built-in assembler. */
 const ASM_FORMS = {
     ACALL: [["ACALL label", "11-bit code address"]],

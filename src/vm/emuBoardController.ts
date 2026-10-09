@@ -208,12 +208,37 @@ export class EmuBoardController {
     return this.emu?.getSfr(addr) ?? 0;
   }
 
+  setSfr(addr: number, value: number): void {
+    const v = value & 0xff;
+    this.emu?.setSfr(addr, v);
+    const isPort = addr === SFR.p0 || addr === SFR.p1 || addr === SFR.p2 || addr === SFR.p3;
+    if (addr === SFR.p0) this.portLatches.p0 = v;
+    if (addr === SFR.p1) this.portLatches.p1 = v;
+    if (addr === SFR.p2) this.portLatches.p2 = v;
+    if (addr === SFR.p3) this.portLatches.p3 = v;
+    if (isPort) {
+      // Inspector edits are explicit latch writes, even when the new value
+      // happens to equal the externally resolved input level.
+      this.board.applyCpuPortValues(
+        this.portLatches.p0,
+        this.portLatches.p1,
+        this.portLatches.p2,
+        this.portLatches.p3,
+      );
+      this.serviceAudio();
+    }
+  }
+
   readCode(addr: number): number {
     return this.emu?.readCode(addr) ?? 0;
   }
 
   readIram(addr: number): number {
     return this.emu?.readIram(addr) ?? 0;
+  }
+
+  writeIram(addr: number, value: number): void {
+    this.emu?.writeIram(addr, value & 0xff);
   }
 
   readXram(addr: number): number {

@@ -1,6 +1,6 @@
-import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm.js";
-import { SFR, ST841_MAP } from "./st841Map.js";
-import { ADUC841_MACHINE_CYCLE_HZ } from "./scopeRecorder.js";
+import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm.js?v=mv1gqa5k";
+import { SFR, ST841_MAP } from "./st841Map.js?v=mv1gqa5k";
+import { ADUC841_MACHINE_CYCLE_HZ } from "./scopeRecorder.js?v=mv1gqa5k";
 export class EmuBoardController {
     constructor(board) {
         this.board = board;
@@ -171,11 +171,33 @@ export class EmuBoardController {
     getSfr(addr) {
         return this.emu?.getSfr(addr) ?? 0;
     }
+    setSfr(addr, value) {
+        const v = value & 0xff;
+        this.emu?.setSfr(addr, v);
+        const isPort = addr === SFR.p0 || addr === SFR.p1 || addr === SFR.p2 || addr === SFR.p3;
+        if (addr === SFR.p0)
+            this.portLatches.p0 = v;
+        if (addr === SFR.p1)
+            this.portLatches.p1 = v;
+        if (addr === SFR.p2)
+            this.portLatches.p2 = v;
+        if (addr === SFR.p3)
+            this.portLatches.p3 = v;
+        if (isPort) {
+            // Inspector edits are explicit latch writes, even when the new value
+            // happens to equal the externally resolved input level.
+            this.board.applyCpuPortValues(this.portLatches.p0, this.portLatches.p1, this.portLatches.p2, this.portLatches.p3);
+            this.serviceAudio();
+        }
+    }
     readCode(addr) {
         return this.emu?.readCode(addr) ?? 0;
     }
     readIram(addr) {
         return this.emu?.readIram(addr) ?? 0;
+    }
+    writeIram(addr, value) {
+        this.emu?.writeIram(addr, value & 0xff);
     }
     readXram(addr) {
         return this.emu?.readXram(addr) ?? 0;

@@ -1,12 +1,12 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js";
+import { createFloatingWindow } from "./floatingWindow.js?v=mv1gqa5k";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/controls/OrbitControls.js";
-import { drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js";
+import { drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js?v=mv1gqa5k";
 const FIXED_SHAFT_OFFSET = new THREE.Vector3(-0.082, -0.048, 0.032);
 const FIXED_SHAFT_ROTATION = new THREE.Euler(3.316126, -4.712389, -0.174533, "XYZ");
 export function createMotorPanel(params) {
     const { motor, audio } = params;
-    const modal = el("div", { class: "motorModal hidden" });
     const shell = el("div", { class: "motorShell" });
     const cardResizeHandle = el("div", { class: "panelResizeHandle panelResizeHandle-card", title: "Resize motor panel" });
     const card = el("div", { class: "motorCard" });
@@ -22,7 +22,8 @@ export function createMotorPanel(params) {
     closeBtn.classList.add("motorAction");
     actions.append(scopeBtn, closeBtn);
     head.append(title, actions);
-    card.appendChild(head);
+    const motorWindow = createFloatingWindow(params.windowParent, "motorFloatingWindow", "st841.ui.motorWindow", params.focusWindow, { element: head, title, closeButton: closeBtn });
+    const modal = motorWindow.element;
     const body = el("div", { class: "motorBody" });
     const viewportCard = el("section", { class: "motorViewportCard" });
     const viewportTop = el("div", { class: "motorViewportTop" });
@@ -174,18 +175,21 @@ export function createMotorPanel(params) {
         createControlLine("Level:", createLevelRow(triggerLevelSpinner.root)),
         createButtonRow(triggerModeButtons),
     ]));
-    scopeDrawer.append(scopeTitleBar, scopeCanvas, scopeInfoRow, scopeControlStrip, stats);
-    shell.append(cardResizeHandle, card, scopeDrawer);
-    modal.appendChild(shell);
+    scopeDrawer.append(scopeCanvas, scopeInfoRow, scopeControlStrip, stats);
+    const scopeWindow = createFloatingWindow(params.windowParent, "scopeFloatingWindow", "st841.ui.scopeWindow", params.focusWindow, { element: scopeTitleBar, title: scopeTitle, closeButton: scopeCloseBtn });
+    scopeWindow.body.appendChild(scopeDrawer);
+    shell.append(cardResizeHandle, card);
+    motorWindow.body.appendChild(shell);
     const renderer = new THREE.WebGLRenderer({
         canvas: viewerCanvas,
-        antialias: true,
+        antialias: false,
+        powerPreference: "low-power",
         alpha: true,
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setPixelRatio(1);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x161616);
+    scene.background = new THREE.Color(0x101b2b);
     const camera = new THREE.PerspectiveCamera(38, 1, 0.01, 100);
     camera.position.set(0.24, 0.18, 0.34);
     const controls = new OrbitControls(camera, viewerCanvas);
@@ -194,14 +198,14 @@ export function createMotorPanel(params) {
     controls.minDistance = 0.16;
     controls.maxDistance = 0.62;
     controls.target.set(0, 0, 0);
-    applyView("front");
-    const hemi = new THREE.HemisphereLight(0xe8e8e8, 0x232323, 1.2);
-    const dir = new THREE.DirectionalLight(0xffffff, 1.6);
+    // A three-quarter view shows the casing depth instead of a flat front disc.
+    camera.position.set(0.20, 0.13, 0.30);
+    controls.update();
+    const hemi = new THREE.HemisphereLight(0xdcecff, 0x202a3b, 0.9);
+    const dir = new THREE.DirectionalLight(0xfff8ee, 1.4);
     dir.position.set(2, 3, 4);
-    const rim = new THREE.DirectionalLight(0xbdbdbd, 0.55);
-    rim.position.set(-3, 1.5, -2.5);
-    scene.add(hemi, dir, rim);
-    const floor = new THREE.Mesh(new THREE.CircleGeometry(0.26, 48), new THREE.MeshBasicMaterial({ color: 0x202020 }));
+    scene.add(hemi, dir);
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(0.26, 48), new THREE.MeshBasicMaterial({ color: 0x17263a }));
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -0.07;
     scene.add(floor);
@@ -210,19 +214,13 @@ export function createMotorPanel(params) {
     const shaftSpin = new THREE.Group();
     shaftMount.add(shaftSpin);
     scene.add(modelRoot, shaftMount);
-    const shaftVisual = new THREE.Mesh(new THREE.CylinderGeometry(0.00935, 0.00935, 0.055, 20), new THREE.MeshStandardMaterial({
-        color: 0xc59b47,
-        emissive: 0x2a1804,
-        metalness: 0.72,
-        roughness: 0.28,
+    const shaftVisual = new THREE.Mesh(new THREE.CylinderGeometry(0.00935, 0.00935, 0.055, 20), new THREE.MeshLambertMaterial({
+        color: 0xe5b85c,
     }));
     shaftVisual.rotation.z = Math.PI / 2;
     shaftSpin.add(shaftVisual);
-    const shaftMarker = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.0055, 0.01925), new THREE.MeshStandardMaterial({
-        color: 0xd5ae63,
-        emissive: 0x211303,
-        metalness: 0.38,
-        roughness: 0.34,
+    const shaftMarker = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.0055, 0.01925), new THREE.MeshLambertMaterial({
+        color: 0xf2cf83,
     }));
     shaftMarker.position.x = 0.0305;
     shaftSpin.add(shaftMarker);
@@ -438,11 +436,9 @@ export function createMotorPanel(params) {
         root.traverse((child) => {
             if (!(child instanceof THREE.Mesh))
                 return;
-            // The SolidWorks export contains one mesh and no materials. Split its
-            // indexed geometry so each face can still receive a distinct color.
-            const geometry = child.geometry.index
-                ? child.geometry.toNonIndexed()
-                : child.geometry.clone();
+            // Keep the indexed mesh and one cheap draw call. Color by an exact
+            // object-space plane, rather than whole triangles (which made a jagged seam).
+            const geometry = child.geometry.clone();
             geometry.computeBoundingBox();
             const geometryBox = geometry.boundingBox;
             const positions = geometry.getAttribute("position");
@@ -450,49 +446,22 @@ export function createMotorPanel(params) {
                 return;
             const geometrySize = new THREE.Vector3();
             geometryBox.getSize(geometrySize);
-            const colors = new Float32Array(positions.count * 3);
-            const faceColor = new THREE.Color();
-            const normalize = (value, min, length) => length > 0 ? (value - min) / length : 0.5;
-            for (let vertex = 0; vertex < positions.count; vertex += 3) {
-                const xs = [0, 1, 2].map((corner) => normalize(positions.getX(vertex + corner), geometryBox.min.x, geometrySize.x));
-                const ys = [0, 1, 2].map((corner) => normalize(positions.getY(vertex + corner), geometryBox.min.y, geometrySize.y));
-                const zs = [0, 1, 2].map((corner) => normalize(positions.getZ(vertex + corner), geometryBox.min.z, geometrySize.z));
-                const minX = Math.min(...xs);
-                const maxX = Math.max(...xs);
-                const minY = Math.min(...ys);
-                const maxY = Math.max(...ys);
-                const minZ = Math.min(...zs);
-                const maxZ = Math.max(...zs);
-                let color = 0x9da8b4;
-                if (minY > 0.7 && minX > 0.18 && maxX < 0.82) {
-                    color = 0x3279b7;
-                }
-                else if (minX > 0.68) {
-                    color = 0xd8dde2;
-                }
-                else if (maxX < 0.18) {
-                    color = 0x737e8a;
-                }
-                else if (maxY < 0.22 || maxZ < 0.12 || minZ > 0.88) {
-                    color = 0xc3cbd3;
-                }
-                faceColor.setHex(color);
-                for (let corner = 0; corner < 3; corner += 1) {
-                    const offset = (vertex + corner) * 3;
-                    colors[offset] = faceColor.r;
-                    colors[offset + 1] = faceColor.g;
-                    colors[offset + 2] = faceColor.b;
-                }
-            }
-            geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+            geometry.deleteAttribute("color");
+            geometry.clearGroups();
             child.geometry = geometry;
-            child.material = new THREE.MeshStandardMaterial({
-                color: 0xffffff,
-                emissive: 0x080a0d,
-                metalness: 0.32,
-                roughness: 0.44,
-                vertexColors: true,
-            });
+            const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
+            material.onBeforeCompile = (shader) => {
+                shader.uniforms.motorMin = { value: geometryBox.min.clone() };
+                shader.uniforms.motorSize = { value: geometrySize.clone().max(new THREE.Vector3(1e-6, 1e-6, 1e-6)) };
+                shader.uniforms.motorMetal = { value: new THREE.Color(0xaeb5bd) };
+                shader.uniforms.motorBlue = { value: new THREE.Color(0x0754a6) };
+                shader.vertexShader = "varying vec3 motorPosition;\n" + shader.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\nmotorPosition = position;");
+                shader.fragmentShader = "varying vec3 motorPosition;\nuniform vec3 motorMin, motorSize, motorMetal, motorBlue;\n" + shader.fragmentShader.replace("#include <color_fragment>", `#include <color_fragment>
+            vec3 motorCoord = (motorPosition - motorMin) / motorSize;
+            float plastic = step(0.7, motorCoord.y) * step(0.18, motorCoord.x) * (1.0 - step(0.82, motorCoord.x));
+            diffuseColor.rgb *= mix(motorMetal, motorBlue, plastic);`);
+            };
+            child.material = material;
         });
         modelRoot.add(root);
         const shaftX = scaledBox.max.x + 0.012;
@@ -534,7 +503,10 @@ export function createMotorPanel(params) {
         opened = true;
         syncScopeRunButton();
         syncScopeState();
-        modal.classList.remove("hidden");
+        if (scopeOnly)
+            motorWindow.close();
+        else
+            motorWindow.open();
         ensureResizeObserver();
         resize();
     }
@@ -545,14 +517,19 @@ export function createMotorPanel(params) {
         activeResize = null;
         document.body.classList.remove("panel-resizing");
         modal.classList.add("hidden");
+        scopeWindow.close();
     }
     function isOpen() {
         return opened;
     }
+    let renderElapsed = 0;
     function renderFrame(dtSeconds) {
-        void dtSeconds;
-        if (!opened)
+        if (!opened || document.hidden)
             return;
+        renderElapsed += dtSeconds;
+        if (renderElapsed < 1 / 30)
+            return;
+        renderElapsed %= 1 / 30;
         const liveTelemetry = motor.getTelemetry();
         const audioTelemetry = audio?.getTelemetry?.() ?? null;
         const liveScopeSignal = params.getScopeSignal?.(activeScopeSource) ?? emptyScopeSignal(activeScopeSource);
@@ -656,6 +633,10 @@ export function createMotorPanel(params) {
         }
     }
     function syncScopeState() {
+        if (scopeOpen && opened)
+            scopeWindow.open();
+        else
+            scopeWindow.close();
         shell.classList.toggle("scope-open", scopeOpen);
         shell.classList.toggle("scope-only", opened && activeScopeSource !== "motor");
         shell.classList.toggle("audio-mode", false);
@@ -735,10 +716,12 @@ export function createMotorPanel(params) {
     syncScopeState();
     return {
         element: modal,
+        scopeElement: scopeWindow.element,
         open,
         openScope,
         close,
         isOpen,
+        resetWindows: () => { motorWindow.resetPosition(); scopeWindow.resetPosition(); },
         renderFrame,
     };
 }

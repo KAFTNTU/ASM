@@ -1,4 +1,4 @@
-import { ADUC841_BITS, ADUC841_INTERRUPT_VECTORS, ADUC841_SFR } from "../mcu/aduc841.js";
+import { ADUC841_BITS, ADUC841_INTERRUPT_VECTORS, ADUC841_SFR } from "../mcu/aduc841.js?v=mv1gqa5k";
 const REGISTER_SET = new Set([...Object.keys(ADUC841_SFR), "a"]);
 const BUILTIN_SBITS = new Map(Object.entries(ADUC841_BITS).map(([name, address]) => [name, formatBuiltinBitOperand(name, address)]));
 const C_SCALAR_TYPE_SOURCE = "(?:_Bool|bool|bit|char|short|int|long|float|double|uint8_t|int8_t|uint16_t|int16_t|uint32_t|int32_t)";

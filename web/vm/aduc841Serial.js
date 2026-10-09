@@ -1,4 +1,4 @@
-import { parseIntelHex } from "./emu8051Wasm.js";
+import { parseIntelHex } from "./emu8051Wasm.js?v=mv1gqa5k";
 const ACK = 0x06;
 const NAK = 0x07;
 const PACKET_START = [0x07, 0x0e];

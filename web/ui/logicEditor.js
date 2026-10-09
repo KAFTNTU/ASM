@@ -1,4 +1,4 @@
-import { COMPONENT_LIBRARY, EDITABLE_BUILTIN_KINDS, cloneProject, createBoardLogicAdapter, createComponent, createCustomChip, createEmptyLogicProject, evaluateCircuit, expandBuiltinComponent, getComponentPins, getComponentSize, getComponentBaseSize, getPinLocalOffset, getPinDirectionVector, normalizeRotation, getPinPosition, logicValueLabel, stepLogicProject, validateProject, } from "./logicCircuit.js";
+import { COMPONENT_LIBRARY, EDITABLE_BUILTIN_KINDS, cloneProject, createBoardLogicAdapter, createComponent, createCustomChip, createEmptyLogicProject, evaluateCircuit, expandBuiltinComponent, getComponentPins, getComponentSize, getComponentBaseSize, getPinLocalOffset, getPinDirectionVector, normalizeRotation, getPinPosition, logicValueLabel, stepLogicProject, validateProject, } from "./logicCircuit.js?v=mv1gqa5k";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STORAGE_KEY = "st841.logic-editor.project.v1";
 const GRID_SIZE = 20;
