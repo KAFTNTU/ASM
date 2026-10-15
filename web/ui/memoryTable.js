@@ -1,4 +1,4 @@
-import { ADUC841_SFR } from "../mcu/aduc841.js?v=mv1gqa5k";
+import { ADUC841_SFR } from "../mcu/aduc841.js?v=mv1gzha8";
 // Map of canonical SFR names for 0x80..0xFF
 const SFR_NAMES = {
     0x80: "P0",

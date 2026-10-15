@@ -1,16 +1,16 @@
-import { EmuBoardController } from "../vm/emuBoardController.js?v=mv1gqa5k";
-import { flashAduc841, isAduc841SerialSupported, } from "../vm/aduc841Serial.js?v=mv1gqa5k";
-import { SFR } from "../vm/st841Map.js?v=mv1gqa5k";
-import { compileAsm } from "./asmCompiler.js?v=mv1gqa5k";
-import { checkC } from "./cChecker.js?v=mv1gqa5k";
-import { transpileCToAsm } from "./cTranspiler.js?v=mv1gqa5k";
-import { createMotorPanel } from "./motorPanel.js?v=mv1gqa5k";
-import { LiveAudioMonitor } from "./liveAudioMonitor.js?v=mv1gqa5k";
-import { createLogicEditor } from "./logicEditor.js?v=mv1gqa5k";
-import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js?v=mv1gqa5k";
-import { MemoryTable } from "./memoryTable.js?v=mv1gqa5k";
-import { createFloatingWindow } from "./floatingWindow.js?v=mv1gqa5k";
-import { LAYOUT_STORAGE_KEY, STAND_ITEMS, STAND_ITEM_IDS, TOOLBAR_CONTROL_IDS, TOOLBAR_CONTROLS, TOOLBAR_GROUP_IDS, TOOLBAR_GROUPS, clampStandPlacement, defaultInterfaceLayout, loadInterfaceLayout, } from "./interfaceLayout.js?v=mv1gqa5k";
+import { EmuBoardController } from "../vm/emuBoardController.js?v=mv1gzha8";
+import { flashAduc841, isAduc841SerialSupported, } from "../vm/aduc841Serial.js?v=mv1gzha8";
+import { SFR } from "../vm/st841Map.js?v=mv1gzha8";
+import { compileAsm } from "./asmCompiler.js?v=mv1gzha8";
+import { checkC } from "./cChecker.js?v=mv1gzha8";
+import { transpileCToAsm } from "./cTranspiler.js?v=mv1gzha8";
+import { createMotorPanel } from "./motorPanel.js?v=mv1gzha8";
+import { LiveAudioMonitor } from "./liveAudioMonitor.js?v=mv1gzha8";
+import { createLogicEditor } from "./logicEditor.js?v=mv1gzha8";
+import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js?v=mv1gzha8";
+import { MemoryTable } from "./memoryTable.js?v=mv1gzha8";
+import { createFloatingWindow } from "./floatingWindow.js?v=mv1gzha8";
+import { LAYOUT_STORAGE_KEY, STAND_ITEMS, STAND_ITEM_IDS, TOOLBAR_CONTROL_IDS, TOOLBAR_CONTROLS, TOOLBAR_GROUP_IDS, TOOLBAR_GROUPS, clampStandPlacement, defaultInterfaceLayout, loadInterfaceLayout, } from "./interfaceLayout.js?v=mv1gzha8";
 const EDITOR_UNDO_GROUP_MS = 700;
 const EDITOR_HISTORY_LIMIT = 300;
 const UI_LANGUAGE_KEY = "st841.ui.language";
@@ -79,6 +79,7 @@ const UI_TEXT = {
         downloadHex: "Download HEX",
         flashTitle: "ADuC841 Flash diagnostics",
         flashHint: "The log records every UART packet. After choosing the COM port, press RESET during the reset window.",
+        flashCableHint: "Serial connection failed. Try unplugging and reconnecting the USB cable, then select the COM port and retry flashing.",
         flashCopy: "Copy log",
         flashCopied: "Copied",
         flashCopyFailed: "Copy failed",
@@ -140,6 +141,7 @@ const UI_TEXT = {
         downloadHex: "Завантажити HEX",
         flashTitle: "Діагностика прошивки ADuC841",
         flashHint: "Журнал показує кожен пакет UART. Після вибору COM-порту натисніть RESET, поки триває очікування скидання.",
+        flashCableHint: "Збій послідовного з’єднання. Спробуйте від’єднати й знову під’єднати USB-кабель, потім виберіть COM-порт і повторіть прошивку.",
         flashCopy: "Скопіювати журнал",
         flashCopied: "Скопійовано",
         flashCopyFailed: "Не вдалося скопіювати",
@@ -607,7 +609,12 @@ export function renderStand(params) {
     flashLogActions.append(flashDriverLink, flashLogCopy, flashLogClose);
     flashLogHead.append(flashLogTitle, flashLogActions);
     const flashLogHint = el("div", { class: "flashLogHint" });
-    flashLogHint.textContent = t("flashHint");
+    let flashCableRecovery = false;
+    const updateFlashHint = () => {
+        flashLogHint.textContent = t(flashCableRecovery ? "flashCableHint" : "flashHint");
+        flashLogHint.classList.toggle("flashLogHintWarning", flashCableRecovery);
+    };
+    updateFlashHint();
     const flashLogBody = el("pre", { class: "flashLogBody mono" });
     flashLogCard.append(flashLogHead, flashLogHint, flashLogBody);
     flashLogModal.appendChild(flashLogCard);
@@ -1699,6 +1706,8 @@ export function renderStand(params) {
         if (!result.ok || !result.hex.trim())
             return;
         resetFlashLog();
+        flashCableRecovery = false;
+        updateFlashHint();
         flashLogModal.classList.remove("hidden");
         flashBtn.disabled = true;
         flashBtn.textContent = "…";
@@ -1721,7 +1730,10 @@ export function renderStand(params) {
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            statusStrip.innerHTML = `<span class="statusErrorLabel">Flash error: ${escapeHtml(message)}</span>`;
+            flashCableRecovery = /buffer\s*overrun|bufferoverrunerror|disconnected|networkerror/i.test(`${error instanceof Error ? error.name : ""} ${message}`);
+            updateFlashHint();
+            const errorText = `${tr("Flash error", "Помилка прошивки")}: ${translateFlashTraceText(message, uiLanguage)}`;
+            statusStrip.innerHTML = `<span class="statusErrorLabel">${escapeHtml(errorText)}${flashCableRecovery ? ` — ${escapeHtml(t("flashCableHint"))}` : ""}</span>`;
         }
         finally {
             flashBtn.disabled = false;
@@ -2838,7 +2850,7 @@ export function renderStand(params) {
         memoryTable.refreshLanguage();
         renderSettingsPanel();
         flashLogTitle.textContent = t("flashTitle");
-        flashLogHint.textContent = t("flashHint");
+        updateFlashHint();
         flashDriverLink.title = t("flashDriverHint");
         flashDriverLink.textContent = t("flashDriver");
         flashLogClose.title = t("close");

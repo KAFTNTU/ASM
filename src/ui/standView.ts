@@ -141,6 +141,7 @@ const UI_TEXT = {
         downloadHex: "Download HEX",
         flashTitle: "ADuC841 Flash diagnostics",
         flashHint: "The log records every UART packet. After choosing the COM port, press RESET during the reset window.",
+        flashCableHint: "Serial connection failed. Try unplugging and reconnecting the USB cable, then select the COM port and retry flashing.",
         flashCopy: "Copy log",
         flashCopied: "Copied",
         flashCopyFailed: "Copy failed",
@@ -202,6 +203,7 @@ const UI_TEXT = {
         downloadHex: "Завантажити HEX",
         flashTitle: "Діагностика прошивки ADuC841",
         flashHint: "Журнал показує кожен пакет UART. Після вибору COM-порту натисніть RESET, поки триває очікування скидання.",
+        flashCableHint: "Збій послідовного з’єднання. Спробуйте від’єднати й знову під’єднати USB-кабель, потім виберіть COM-порт і повторіть прошивку.",
         flashCopy: "Скопіювати журнал",
         flashCopied: "Скопійовано",
         flashCopyFailed: "Не вдалося скопіювати",
@@ -647,7 +649,12 @@ export function renderStand(params: { board: Board }): HTMLElement {
     flashLogActions.append(flashDriverLink, flashLogCopy, flashLogClose);
     flashLogHead.append(flashLogTitle, flashLogActions);
     const flashLogHint = el("div", { class: "flashLogHint" });
-    flashLogHint.textContent = t("flashHint");
+    let flashCableRecovery = false;
+    const updateFlashHint = () => {
+        flashLogHint.textContent = t(flashCableRecovery ? "flashCableHint" : "flashHint");
+        flashLogHint.classList.toggle("flashLogHintWarning", flashCableRecovery);
+    };
+    updateFlashHint();
     const flashLogBody = el("pre", { class: "flashLogBody mono" });
     flashLogCard.append(flashLogHead, flashLogHint, flashLogBody);
     flashLogModal.appendChild(flashLogCard);
@@ -1721,6 +1728,8 @@ export function renderStand(params: { board: Board }): HTMLElement {
         const result = compileAndRender(true);
         if (!result.ok || !result.hex.trim()) return;
         resetFlashLog();
+        flashCableRecovery = false;
+        updateFlashHint();
         flashLogModal.classList.remove("hidden");
         flashBtn.disabled = true;
         flashBtn.textContent = "…";
@@ -1743,7 +1752,10 @@ export function renderStand(params: { board: Board }): HTMLElement {
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            statusStrip.innerHTML = `<span class="statusErrorLabel">Flash error: ${escapeHtml(message)}</span>`;
+            flashCableRecovery = /buffer\s*overrun|bufferoverrunerror|disconnected|networkerror/i.test(`${error instanceof Error ? error.name : ""} ${message}`);
+            updateFlashHint();
+            const errorText = `${tr("Flash error", "Помилка прошивки")}: ${translateFlashTraceText(message, uiLanguage)}`;
+            statusStrip.innerHTML = `<span class="statusErrorLabel">${escapeHtml(errorText)}${flashCableRecovery ? ` — ${escapeHtml(t("flashCableHint"))}` : ""}</span>`;
         }
         finally {
             flashBtn.disabled = false;
@@ -2812,7 +2824,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
         memoryTable.refreshLanguage();
         renderSettingsPanel();
         flashLogTitle.textContent = t("flashTitle");
-        flashLogHint.textContent = t("flashHint");
+        updateFlashHint();
         flashDriverLink.title = t("flashDriverHint");
         flashDriverLink.textContent = t("flashDriver");
         flashLogClose.title = t("close");

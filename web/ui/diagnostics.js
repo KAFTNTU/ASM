@@ -1,4 +1,4 @@
-import { parseIntelHex } from "../vm/emu8051Wasm.js?v=mv1gqa5k";
+import { parseIntelHex } from "../vm/emu8051Wasm.js?v=mv1gzha8";
 export function analyzeSource(mode, code) {
     switch (mode) {
         case "asm":

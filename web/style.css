@@ -1460,6 +1460,11 @@ input {
   background: #141d2a;
 }
 
+.flashLogHint.flashLogHintWarning {
+  color: #ffd49a;
+  background: #33261c;
+}
+
 .flashLogBody {
   min-height: 0;
   margin: 0;
@@ -4910,6 +4915,11 @@ body {
   color: #425b77;
   border-bottom-color: rgba(55, 76, 103, 0.16);
   background: #dbe4ed;
+}
+
+.minimalShell[data-theme="light"] .flashLogHint.flashLogHintWarning {
+  color: #7b4417;
+  background: #fff1de;
 }
 
 .minimalShell[data-theme="light"] .flashLogBody {

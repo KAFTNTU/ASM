@@ -1,8 +1,8 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js";
-import { createFloatingWindow } from "./floatingWindow.js?v=mv1gqa5k";
+import { createFloatingWindow } from "./floatingWindow.js?v=mv1gzha8";
 import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/controls/OrbitControls.js";
-import { drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js?v=mv1gqa5k";
+import { drawRecordedScope, emptyScopeSignal, hasTriggerEdge, updateRecordedScopeReadout, } from "./realScope.js?v=mv1gzha8";
 const FIXED_SHAFT_OFFSET = new THREE.Vector3(-0.082, -0.048, 0.032);
 const FIXED_SHAFT_ROTATION = new THREE.Euler(3.316126, -4.712389, -0.174533, "XYZ");
 export function createMotorPanel(params) {
