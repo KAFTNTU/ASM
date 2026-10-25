@@ -1,6 +1,6 @@
-import { PeripheralBus } from "./peripheralBus.js?v=mv1gzha8";
-import { ScopeRecorder } from "./scopeRecorder.js?v=mv1gzha8";
-import { ST841_MAP } from "./st841Map.js?v=mv1gzha8";
+import { PeripheralBus } from "./peripheralBus.js?v=mvoawuqj";
+import { ScopeRecorder } from "./scopeRecorder.js?v=mvoawuqj";
+import { ST841_MAP } from "./st841Map.js?v=mvoawuqj";
 export class Board {
     constructor() {
         this.bus = new PeripheralBus();

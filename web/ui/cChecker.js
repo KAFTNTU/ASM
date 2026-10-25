@@ -1,4 +1,4 @@
-import { ASM_DIRECTIVES, ASM_MNEMONICS } from "./codeCompletions.js?v=mv1gzha8";
+import { ASM_DIRECTIVES, ASM_MNEMONICS } from "./codeCompletions.js?v=mvoawuqj";
 export function checkC(source) {
     const diagnostics = [];
     const text = source.replace(/\r/g, "");

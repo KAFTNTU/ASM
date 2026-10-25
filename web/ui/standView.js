@@ -1,16 +1,16 @@
-import { EmuBoardController } from "../vm/emuBoardController.js?v=mv1gzha8";
-import { flashAduc841, isAduc841SerialSupported, } from "../vm/aduc841Serial.js?v=mv1gzha8";
-import { SFR } from "../vm/st841Map.js?v=mv1gzha8";
-import { compileAsm } from "./asmCompiler.js?v=mv1gzha8";
-import { checkC } from "./cChecker.js?v=mv1gzha8";
-import { transpileCToAsm } from "./cTranspiler.js?v=mv1gzha8";
-import { createMotorPanel } from "./motorPanel.js?v=mv1gzha8";
-import { LiveAudioMonitor } from "./liveAudioMonitor.js?v=mv1gzha8";
-import { createLogicEditor } from "./logicEditor.js?v=mv1gzha8";
-import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js?v=mv1gzha8";
-import { MemoryTable } from "./memoryTable.js?v=mv1gzha8";
-import { createFloatingWindow } from "./floatingWindow.js?v=mv1gzha8";
-import { LAYOUT_STORAGE_KEY, STAND_ITEMS, STAND_ITEM_IDS, TOOLBAR_CONTROL_IDS, TOOLBAR_CONTROLS, TOOLBAR_GROUP_IDS, TOOLBAR_GROUPS, clampStandPlacement, defaultInterfaceLayout, loadInterfaceLayout, } from "./interfaceLayout.js?v=mv1gzha8";
+import { EmuBoardController } from "../vm/emuBoardController.js?v=mvoawuqj";
+import { flashAduc841, isAduc841SerialSupported, } from "../vm/aduc841Serial.js?v=mvoawuqj";
+import { SFR } from "../vm/st841Map.js?v=mvoawuqj";
+import { compileAsm } from "./asmCompiler.js?v=mvoawuqj";
+import { checkC } from "./cChecker.js?v=mvoawuqj";
+import { transpileCToAsm } from "./cTranspiler.js?v=mvoawuqj";
+import { createMotorPanel } from "./motorPanel.js?v=mvoawuqj";
+import { LiveAudioMonitor } from "./liveAudioMonitor.js?v=mvoawuqj";
+import { createLogicEditor } from "./logicEditor.js?v=mvoawuqj";
+import { ASM_DIRECTIVES, ASM_HIGHLIGHT_SYMBOLS, ASM_MNEMONICS, C_BUILTINS, C_HIGHLIGHT_SYMBOLS, C_KEYWORDS, C_MEMORY_QUALIFIERS, C_TYPE_NAMES, getCodeCompletions, } from "./codeCompletions.js?v=mvoawuqj";
+import { MemoryTable } from "./memoryTable.js?v=mvoawuqj";
+import { createFloatingWindow } from "./floatingWindow.js?v=mvoawuqj";
+import { LAYOUT_STORAGE_KEY, STAND_ITEMS, STAND_ITEM_IDS, TOOLBAR_CONTROL_IDS, TOOLBAR_CONTROLS, TOOLBAR_GROUP_IDS, TOOLBAR_GROUPS, clampStandPlacement, defaultInterfaceLayout, loadInterfaceLayout, } from "./interfaceLayout.js?v=mvoawuqj";
 const EDITOR_UNDO_GROUP_MS = 700;
 const EDITOR_HISTORY_LIMIT = 300;
 const UI_LANGUAGE_KEY = "st841.ui.language";
@@ -473,7 +473,7 @@ export function renderStand(params) {
         moreBtn.setAttribute("aria-expanded", String(open));
     });
     document.addEventListener("pointerdown", (event) => {
-        if (event.target instanceof Node && !moreWrap.contains(event.target)) {
+        if (event.target instanceof Node && !moreWrap.contains(event.target) && !moreMenu.contains(event.target)) {
             moreMenu.classList.add("hidden");
             moreBtn.setAttribute("aria-expanded", "false");
         }
@@ -538,8 +538,10 @@ export function renderStand(params) {
     applyToolbarLayout();
     syncThemeButton();
     windowCard.appendChild(toolbar);
-    // Escape the toolbar's horizontal scroll clipping.
+    // Escape the toolbar's horizontal scroll clipping. Both menus must stay
+    // above the editor when the stand is in a separate window.
     windowCard.appendChild(fileMenu);
+    windowCard.appendChild(moreMenu);
     const floatingWindows = [];
     const focusFloatingWindow = (element) => {
         windowCard.querySelectorAll(".floatingWindow").forEach((item) => item.style.zIndex = "70");
@@ -2176,6 +2178,17 @@ export function renderStand(params) {
         fullscreenBtn.classList.toggle("active", active);
     }
     let standPopoutWindow = null;
+    function refreshStandSurface() {
+        lastBoardVisualRevision = -1;
+        // Reparenting a canvas from a popup can leave the old raster visible
+        // until a later device update. Wait for the page layout, then redraw.
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+            updateBoardScale();
+            applyStandLayout();
+            board.render(drawContext, canvas.width, canvas.height, uiTheme, boardDrawnLayout);
+            lastBoardVisualRevision = board.getVisualRevision();
+        }));
+    }
     function openFloatingStand() {
         if (standPopoutWindow && !standPopoutWindow.closed) {
             popupReturnsFloating = false;
@@ -2188,7 +2201,7 @@ export function renderStand(params) {
         standWindow.body.appendChild(boardSurface);
         standReturnBtn.before(standQuickActions);
         standWindow.open();
-        updateBoardScale();
+        refreshStandSurface();
         syncPopoutButtons();
     }
     function dockStandInPage() {
@@ -2200,7 +2213,7 @@ export function renderStand(params) {
         delete root.dataset.standPopped;
         boardPane.style.removeProperty("display");
         mainRow.style.removeProperty("grid-template-columns");
-        updateBoardScale();
+        refreshStandSurface();
         syncPopoutButtons();
     }
     function syncPopoutButtons() {
@@ -2343,7 +2356,7 @@ export function renderStand(params) {
         popStage.className = "standPopoutStage";
         popDoc.body.append(popBar, popStage);
         popStage.appendChild(boardSurface);
-        updateBoardScale();
+        refreshStandSurface();
         standPopoutWindow.addEventListener("beforeunload", () => dockStandBack());
         const pollClosedInterval = window.setInterval(() => {
             if (!standPopoutWindow || standPopoutWindow.closed) {
@@ -2370,7 +2383,7 @@ export function renderStand(params) {
             boardPane.appendChild(boardSurface);
         }
         boardPane.insertBefore(standQuickActions, boardSurface);
-        updateBoardScale();
+        refreshStandSurface();
         if (popWindow && !popWindow.closed) {
             try {
                 popWindow.close();

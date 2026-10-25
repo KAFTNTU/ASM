@@ -1,14 +1,14 @@
-import { Board } from "../vm/board.js?v=mv1gzha8";
-import { LedBar } from "../vm/devices/ledBar.js?v=mv1gzha8";
-import { SevenSeg4 } from "../vm/devices/sevenSeg.js?v=mv1gzha8";
-import { Matrix5x7 } from "../vm/devices/matrix5x7.js?v=mv1gzha8";
-import { Keypad4x3 } from "../vm/devices/keypad4x3.js?v=mv1gzha8";
-import { Lcd16x2 } from "../vm/devices/lcd16x2.js?v=mv1gzha8";
-import { AdcJoystick } from "../vm/devices/adcJoystick.js?v=mv1gzha8";
-import { PwmMotor } from "../vm/devices/pwmMotor.js?v=mv1gzha8";
-import { AudioCodec } from "../vm/devices/audioCodec.js?v=mv1gzha8";
-import { ST841_MAP } from "../vm/st841Map.js?v=mv1gzha8";
-import { renderStand } from "./standView.js?v=mv1gzha8";
+import { Board } from "../vm/board.js?v=mvoawuqj";
+import { LedBar } from "../vm/devices/ledBar.js?v=mvoawuqj";
+import { SevenSeg4 } from "../vm/devices/sevenSeg.js?v=mvoawuqj";
+import { Matrix5x7 } from "../vm/devices/matrix5x7.js?v=mvoawuqj";
+import { Keypad4x3 } from "../vm/devices/keypad4x3.js?v=mvoawuqj";
+import { Lcd16x2 } from "../vm/devices/lcd16x2.js?v=mvoawuqj";
+import { AdcJoystick } from "../vm/devices/adcJoystick.js?v=mvoawuqj";
+import { PwmMotor } from "../vm/devices/pwmMotor.js?v=mvoawuqj";
+import { AudioCodec } from "../vm/devices/audioCodec.js?v=mvoawuqj";
+import { ST841_MAP } from "../vm/st841Map.js?v=mvoawuqj";
+import { renderStand } from "./standView.js?v=mvoawuqj";
 export function createApp(root) {
     const board = new Board();
     const ledBar = new LedBar();

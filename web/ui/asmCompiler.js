@@ -1,4 +1,4 @@
-import { ADUC841_BITS, ADUC841_SFR } from "../mcu/aduc841.js?v=mv1gzha8";
+import { ADUC841_BITS, ADUC841_SFR } from "../mcu/aduc841.js?v=mvoawuqj";
 const MAX_MACRO_DEPTH = 32;
 const MAX_REPEAT_COUNT = 65535;
 const MAX_EXPANDED_LINES = 100000;

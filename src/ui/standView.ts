@@ -527,7 +527,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
         moreBtn.setAttribute("aria-expanded", String(open));
     });
     document.addEventListener("pointerdown", (event) => {
-        if (event.target instanceof Node && !moreWrap.contains(event.target)) {
+        if (event.target instanceof Node && !moreWrap.contains(event.target) && !moreMenu.contains(event.target)) {
             moreMenu.classList.add("hidden");
             moreBtn.setAttribute("aria-expanded", "false");
         }
@@ -586,8 +586,10 @@ export function renderStand(params: { board: Board }): HTMLElement {
     applyToolbarLayout();
     syncThemeButton();
     windowCard.appendChild(toolbar);
-    // Escape the toolbar's horizontal scroll clipping.
+    // Escape the toolbar's horizontal scroll clipping. Both menus must stay
+    // above the editor when the stand is in a separate window.
     windowCard.appendChild(fileMenu);
+    windowCard.appendChild(moreMenu);
     const floatingWindows: HTMLElement[] = [];
     const focusFloatingWindow = (element: HTMLElement) => {
         windowCard.querySelectorAll<HTMLElement>(".floatingWindow").forEach((item) => item.style.zIndex = "70");
@@ -2187,6 +2189,17 @@ export function renderStand(params: { board: Board }): HTMLElement {
         fullscreenBtn.classList.toggle("active", active);
     }
     let standPopoutWindow: Window | null = null;
+    function refreshStandSurface(): void {
+        lastBoardVisualRevision = -1;
+        // Reparenting a canvas from a popup can leave the old raster visible
+        // until a later device update. Wait for the page layout, then redraw.
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+            updateBoardScale();
+            applyStandLayout();
+            board.render(drawContext, canvas.width, canvas.height, uiTheme, boardDrawnLayout);
+            lastBoardVisualRevision = board.getVisualRevision();
+        }));
+    }
     function openFloatingStand(): void {
         if (standPopoutWindow && !standPopoutWindow.closed) { popupReturnsFloating = false; dockStandBack(); }
         standFloating = true;
@@ -2196,7 +2209,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
         standWindow.body.appendChild(boardSurface);
         standReturnBtn.before(standQuickActions);
         standWindow.open();
-        updateBoardScale();
+        refreshStandSurface();
         syncPopoutButtons();
     }
     function dockStandInPage(): void {
@@ -2208,7 +2221,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
         delete root.dataset.standPopped;
         boardPane.style.removeProperty("display");
         mainRow.style.removeProperty("grid-template-columns");
-        updateBoardScale();
+        refreshStandSurface();
         syncPopoutButtons();
     }
     function syncPopoutButtons(): void {
@@ -2343,7 +2356,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
         popStage.className = "standPopoutStage";
         popDoc.body.append(popBar, popStage);
         popStage.appendChild(boardSurface);
-        updateBoardScale();
+        refreshStandSurface();
         standPopoutWindow.addEventListener("beforeunload", () => dockStandBack());
         const pollClosedInterval = window.setInterval(() => {
             if (!standPopoutWindow || standPopoutWindow.closed) {
@@ -2369,7 +2382,7 @@ export function renderStand(params: { board: Board }): HTMLElement {
             boardPane.appendChild(boardSurface);
         }
         boardPane.insertBefore(standQuickActions, boardSurface);
-        updateBoardScale();
+        refreshStandSurface();
         if (popWindow && !popWindow.closed) {
             try {
                 popWindow.close();

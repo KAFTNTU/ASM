@@ -5675,6 +5675,37 @@ body:has(.minimalShell[data-stand-popped="true"]) { overflow: hidden; }
 .toolbarExtraActions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .toolbarMoreMenu .fileMenu { right: 0; left: auto; }
 .minimalShell[data-theme="light"] .toolbarMoreMenu { background: #eef3f8; border-color: #a9bbce; }
+
+/* When the stand is detached, More becomes a wide toolbar layer over the
+   editor. It must not be constrained by the toolbar's horizontal scroller. */
+.minimalShell[data-stand-popped="true"] .toolbarMoreMenu {
+  position: absolute;
+  top: calc(var(--user-toolbar-height, 58px) - 1px);
+  right: 4px;
+  left: 4px;
+  width: auto;
+  max-width: none;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  z-index: 80;
+  border-radius: 0 0 10px 10px;
+  box-sizing: border-box;
+}
+.minimalShell[data-stand-popped="true"] .toolbarMoreMenu.hidden { display: none; }
+.minimalShell[data-stand-popped="true"] .toolbarMoreMenu .projectGroup,
+.minimalShell[data-stand-popped="true"] .toolbarMoreMenu .toolbarExtraActions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin: 0;
+}
+.minimalShell[data-stand-popped="true"] .toolbarMoreMenu .toolbarExtraActions {
+  margin-left: auto;
+}
 @media (max-width: 1300px) {
   .toolbar { gap: 5px; padding-inline: 8px; }
   .toolbarGroup { gap: 3px; padding: 3px; }

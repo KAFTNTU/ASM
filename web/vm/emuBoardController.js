@@ -1,6 +1,6 @@
-import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm.js?v=mv1gzha8";
-import { SFR, ST841_MAP } from "./st841Map.js?v=mv1gzha8";
-import { ADUC841_MACHINE_CYCLE_HZ } from "./scopeRecorder.js?v=mv1gzha8";
+import { Emu8051Wasm, parseIntelHex } from "./emu8051Wasm.js?v=mvoawuqj";
+import { SFR, ST841_MAP } from "./st841Map.js?v=mvoawuqj";
+import { ADUC841_MACHINE_CYCLE_HZ } from "./scopeRecorder.js?v=mvoawuqj";
 export class EmuBoardController {
     constructor(board) {
         this.board = board;
